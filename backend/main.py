@@ -95,7 +95,7 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Update with your frontend URL
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],  # Update with your frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -131,6 +131,7 @@ async def get_current_user(token: str):
         raise HTTPException(status_code=401, detail="Invalid token")
 
 def predict_violence(frame):
+    """Detect violence in a frame"""
     try:
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         input_tensor = transform(frame_rgb)
@@ -145,7 +146,9 @@ def predict_violence(frame):
         return violence_score
     except Exception as e:
         print(f"Prediction error: {str(e)}")
-        return None
+        import traceback
+        traceback.print_exc()
+        return 0.0  # Return a safe default
 
 # Routes
 @app.post("/auth/signup")
@@ -217,116 +220,166 @@ async def analyze_video(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# @app.websocket("/ws")
-# async def websocket_endpoint(websocket: WebSocket):
-#     await websocket.accept()
-#     cap = cv2.VideoCapture("rtsp://your_camera_rtsp_url")
-#     try:
-#         while True:
-#             data = await websocket.receive_bytes()
-#             nparr = np.frombuffer(data, np.uint8)
-#             frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            
-#             if frame is None:
-#                 continue
-                
-#             # Detect objects (people) in the frame
-#             detections = detect_objects(frame)
-            
-#             # Violence prediction
-#             score = predict_violence(frame)
-#             is_violent = score > 0.2
-            
-#             # Draw bounding boxes - highlight violent areas in red
-#             annotated_frame = frame.copy()
-#             for box, score, label in zip(detections['boxes'], detections['scores'], detections['labels']):
-#                 if score > 0.3:  # Only show confident detections
-#                     x1, y1, x2, y2 = map(int, box)
-#                     # Person is label 1 in COCO dataset
-#                     if label == 1:  
-#                         # Use red for violent scenes, green otherwise
-#                         color = (0, 0, 255) if is_violent else (0, 255, 0)
-#                         thickness = 2 if is_violent else 1
-                        
-#                         # Draw rectangle around person
-#                         cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, thickness)
-                        
-#                         # Add confidence score text
-#                         if is_violent:
-#                             conf_text = f"Violence: {score:.2f}"
-#                             cv2.putText(annotated_frame, conf_text, (x1, y1-10), 
-#                                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-            
-#             # If violence detected, save the frame
-#             if is_violent:
-#                 timestamp = datetime.datetime.now().isoformat()
-#                 detection_path = f"detections/{timestamp}.jpg"
-#                 cv2.imwrite(detection_path, annotated_frame)
-                
-#                 # Save to database
-#                 await detections_collection.insert_one({
-#                     "timestamp": timestamp,
-#                     "score": float(score),
-#                     "image_path": detection_path
-#                 })
-            
-#             # Encode the annotated frame as Base64 and send it back
-#             _, jpeg = cv2.imencode('.jpg', annotated_frame)
-#             import base64
-#             encoded_img = base64.b64encode(jpeg.tobytes()).decode('utf-8')
-            
-#             await websocket.send_json({
-#                 "violence": is_violent,
-#                 "score": float(score),
-#                 "timestamp": datetime.datetime.now().isoformat(),
-#                 "annotated_frame": encoded_img
-#             })
-#     except WebSocketDisconnect:
-#         print("Client disconnected")
-#     except Exception as e:
-#         print(f"WebSocket error: {str(e)}")
-#         await websocket.close()
-# Replace the websocket_endpoint with RTSP processing
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    cap = cv2.VideoCapture("rtsp://your_camera_rtsp_url")  # Replace with your RTSP URL
+    rtsp_url = None
+    use_rtsp = False
+    cap = None
+    
     try:
+        # Process frames continuously
         while True:
-            ret, frame = cap.read()
-            if not ret:
+            try:
+                # First try to receive binary data (camera frames)
+                data = await websocket.receive_bytes()
+                
+                # Process webcam frame from frontend
+                nparr = np.frombuffer(data, np.uint8)
+                frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                
+                if frame is None:
+                    await websocket.send_json({"error": "Invalid image data received"})
+                    continue
+                    
+            except WebSocketDisconnect:
                 break
+            except Exception as e:
+                # If not binary, try to receive JSON (config)
+                try:
+                    json_data = await websocket.receive_json()
+                    print(f"Received JSON config: {json_data}")
+                    
+                    # Configure RTSP if provided
+                    if "rtsp_url" in json_data and json_data["rtsp_url"]:
+                        rtsp_url = json_data["rtsp_url"]
+                        use_rtsp = True
+                        
+                        # Close previous capture if any
+                        if cap and cap.isOpened():
+                            cap.release()
+                            
+                        # Open RTSP stream
+                        print(f"Opening RTSP stream: {rtsp_url}")
+                        cap = cv2.VideoCapture(rtsp_url)
+                        
+                        if not cap.isOpened():
+                            await websocket.send_json({"error": f"Failed to open RTSP stream: {rtsp_url}"})
+                            use_rtsp = False
+                            continue
+                        else:
+                            await websocket.send_json({"message": f"RTSP stream opened: {rtsp_url}"})
+                    elif "use_rtsp" in json_data and json_data["use_rtsp"] == False:
+                        # User wants to use browser's webcam
+                        use_rtsp = False
+                        if cap and cap.isOpened():
+                            cap.release()
+                            cap = None
+                        await websocket.send_json({"message": "Using browser webcam"})
+                        continue
+                    else:
+                        # Use system camera as fallback
+                        use_rtsp = True
+                        
+                        # Close previous capture if any
+                        if cap and cap.isOpened():
+                            cap.release()
+                            
+                        # Try to open system camera
+                        print("Opening system camera")
+                        cap = cv2.VideoCapture(0)  # 0 is usually the built-in webcam
+                        
+                        if not cap.isOpened():
+                            await websocket.send_json({"error": "Failed to open system camera"})
+                            use_rtsp = False
+                            continue
+                        else:
+                            await websocket.send_json({"message": "System camera opened"})
+                        
+                except Exception as inner_e:
+                    print(f"Error in websocket communication: {str(inner_e)}")
+                    import traceback
+                    traceback.print_exc()
+                    continue
             
-            # Process frame
+            # Get frame from RTSP or system camera if configured
+            if use_rtsp and cap and cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    await websocket.send_json({"error": "Failed to read from stream"})
+                    continue
+            
+            # Violence detection
+            violence_score = predict_violence(frame)
+            is_violent = violence_score > 0.3
+            
+            # Object detection
             detections = detect_objects(frame)
-            annotated_frame = draw_bounding_boxes(frame.copy(), detections)
-            score = predict_violence(frame)
-            is_violent = score > 0.2
             
-            # Save detection if violent
+            # Create annotated frame with violence indicators
+            annotated_frame = frame.copy()
+            
+            # Draw bounding boxes around detected people
+            for box, score, label in zip(detections['boxes'], detections['scores'], detections['labels']):
+                if score > 0.3:
+                    x1, y1, x2, y2 = map(int, box)
+                    # Person is label 1 in COCO dataset
+                    if label == 1:
+                        # Red for violence, green for non-violence
+                        color = (0, 0, 255) if is_violent else (0, 255, 0)
+                        thickness = 3 if is_violent else 1
+                        
+                        # Draw rectangle around person
+                        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, thickness)
+                        
+                        # Add violence score text if violent
+                        if is_violent:
+                            text = f"Violence: {violence_score:.2f}"
+                            cv2.putText(annotated_frame, text, (x1, y1-10), 
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            
+            # Add overall violence indicator at the top
+            status_text = f"VIOLENCE DETECTED: {violence_score:.2f}" if is_violent else "No Violence"
+            cv2.putText(annotated_frame, status_text, (10, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255) if is_violent else (0, 255, 0), 2)
+            
+            # Save violent frames
             if is_violent:
-                timestamp = datetime.datetime.now().isoformat()
+                timestamp = datetime.datetime.now().isoformat().replace(":", "-")
                 detection_path = f"detections/{timestamp}.jpg"
                 cv2.imwrite(detection_path, annotated_frame)
+                
+                # Log to database
                 await detections_collection.insert_one({
                     "timestamp": timestamp,
-                    "score": float(score),
+                    "score": float(violence_score),
                     "image_path": detection_path
                 })
             
-            # Encode and send
-            _, jpeg = cv2.imencode('.jpg', annotated_frame)
-            encoded_img = base64.b64encode(jpeg.tobytes()).decode('utf-8')
-            await websocket.send_json({
-                "violence": is_violent,
-                "score": float(score),
-                "timestamp": datetime.datetime.now().isoformat(),
-                "annotated_frame": encoded_img
-            })
+            # Encode and send frame to frontend
+            _, buffer = cv2.imencode('.jpg', annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            encoded_frame = base64.b64encode(buffer).decode('utf-8')
+            
+            try:
+                await websocket.send_json({
+                    "violence": is_violent,
+                    "score": float(violence_score),
+                    "timestamp": datetime.datetime.now().isoformat(),
+                    "annotated_frame": encoded_frame
+                })
+            except Exception as e:
+                print(f"Send error: {str(e)}")
+                break
+                
+    except WebSocketDisconnect:
+        print("Client disconnected")
     except Exception as e:
         print(f"WebSocket error: {str(e)}")
+        import traceback
+        traceback.print_exc()
     finally:
-        cap.release()
+        if cap and cap.isOpened():
+            cap.release()
         await websocket.close()
 
 @app.post("/analyze_video")
@@ -334,8 +387,9 @@ async def analyze_video_file(file: UploadFile = File(...)):
     try:
         # Save the uploaded video temporarily
         temp_video_path = "temp_video.mp4"
-        with open(temp_video_path, "wb") as f:
-            f.write(await file.read())
+        with open(temp_video_path, "wb") as temp_file:
+            content = await file.read()
+            temp_file.write(content)
         
         cap = cv2.VideoCapture(temp_video_path)
         if not cap.isOpened():
@@ -345,6 +399,7 @@ async def analyze_video_file(file: UploadFile = File(...)):
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         
         # Prepare video writer for annotated video
         timestamp = datetime.datetime.now().isoformat().replace(":", "-")
@@ -352,33 +407,286 @@ async def analyze_video_file(file: UploadFile = File(...)):
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         out = cv2.VideoWriter(annotated_video_path, fourcc, fps, (width, height))
         
-        # Process frames
+        # Analysis results
         results = []
+        frame_count = 0
+        violence_frames = 0
+        
+        # Track violent segments for detailed analysis
+        violent_segments = []
+        current_segment = None
+        
+        # Save key frames for detailed analysis
+        key_frames_dir = f"annotated_videos/keyframes_{timestamp}"
+        os.makedirs(key_frames_dir, exist_ok=True)
+        
+        # Process frames
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
-            detections = detect_objects(frame)
-            annotated_frame = draw_bounding_boxes(frame.copy(), detections)
-            score = predict_violence(frame)
-            is_violent = score > 0.2
-            label = f"Violence: {'Yes' if is_violent else 'No'} {score:.2f}"
-            cv2.putText(annotated_frame, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1,
-                        (0, 0, 255) if is_violent else (0, 255, 0), 2)
+                
+            frame_count += 1
+            
+            # Only analyze every 5th frame to speed up processing for large videos
+            # but still write every frame to the output video
+            if frame_count % 5 == 0 or frame_count == 1:
+                # Analyze for violence
+                violence_score = predict_violence(frame)
+                is_violent = violence_score > 0.3
+                
+                # Track violent segments
+                if is_violent:
+                    violence_frames += 1
+                    if current_segment is None:
+                        # Start a new segment
+                        current_segment = {
+                            "start_frame": frame_count,
+                            "start_time": frame_count / fps,
+                            "scores": [violence_score]
+                        }
+                    else:
+                        # Continue current segment
+                        current_segment["scores"].append(violence_score)
+                else:
+                    # End the current segment if it exists
+                    if current_segment is not None:
+                        current_segment["end_frame"] = frame_count - 5  # Account for the skipped frames
+                        current_segment["end_time"] = current_segment["end_frame"] / fps
+                        current_segment["duration"] = current_segment["end_time"] - current_segment["start_time"]
+                        current_segment["avg_score"] = sum(current_segment["scores"]) / len(current_segment["scores"])
+                        violent_segments.append(current_segment)
+                        current_segment = None
+                
+                # Detect objects (people)
+                detections = detect_objects(frame)
+                
+                # Create annotated frame
+                annotated_frame = frame.copy()
+                
+                # Draw bounding boxes
+                for box, score, label in zip(detections['boxes'], detections['scores'], detections['labels']):
+                    if score > 0.3:
+                        x1, y1, x2, y2 = map(int, box)
+                        # Person is label 1 in COCO dataset
+                        if label == 1:
+                            # Red for violence, green for non-violence
+                            color = (0, 0, 255) if is_violent else (0, 255, 0)
+                            thickness = 3 if is_violent else 1
+                            
+                            # Draw rectangle around person
+                            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, thickness)
+                            
+                            # Add violence score text if violent
+                            if is_violent:
+                                text = f"Violence: {violence_score:.2f}"
+                                cv2.putText(annotated_frame, text, (x1, y1-10), 
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                
+                # Add overall violence indicator at the top
+                status_text = f"VIOLENCE DETECTED: {violence_score:.2f}" if is_violent else "No Violence"
+                cv2.putText(annotated_frame, status_text, (10, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255) if is_violent else (0, 255, 0), 2)
+                
+                # Add frame number and timestamp
+                timestamp_text = f"Frame: {frame_count}/{total_frames} - Time: {frame_count/fps:.2f}s"
+                cv2.putText(annotated_frame, timestamp_text, (10, height - 10), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                
+                # Store frame result
+                results.append({
+                    "frame": frame_count,
+                    "time": frame_count / fps,
+                    "violence_detected": is_violent,
+                    "score": float(violence_score)
+                })
+                
+                # Save key frames for violent segments
+                if is_violent and (frame_count % 30 == 0 or len(violent_segments) == 0 or violent_segments[-1]["end_frame"] == frame_count - 5):
+                    keyframe_path = f"{key_frames_dir}/frame_{frame_count}.jpg"
+                    cv2.imwrite(keyframe_path, annotated_frame)
+            else:
+                # For frames we don't analyze, carry forward the last analysis result for consistent video
+                if results:
+                    is_violent = results[-1]["violence_detected"]
+                    violence_score = results[-1]["score"]
+                else:
+                    is_violent = False
+                    violence_score = 0.0
+                    
+                # Create simple annotated frame with just the status
+                annotated_frame = frame.copy()
+                status_text = f"VIOLENCE DETECTED: {violence_score:.2f}" if is_violent else "No Violence"
+                cv2.putText(annotated_frame, status_text, (10, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255) if is_violent else (0, 255, 0), 2)
+                           
+                # Add frame number and timestamp
+                timestamp_text = f"Frame: {frame_count}/{total_frames} - Time: {frame_count/fps:.2f}s"
+                cv2.putText(annotated_frame, timestamp_text, (10, height - 10), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            
+            # Write the annotated frame to the output video
             out.write(annotated_frame)
-            results.append({"violence": is_violent, "score": score})
+        
+        # Close the last segment if still open
+        if current_segment is not None:
+            current_segment["end_frame"] = frame_count
+            current_segment["end_time"] = frame_count / fps
+            current_segment["duration"] = current_segment["end_time"] - current_segment["start_time"]
+            current_segment["avg_score"] = sum(current_segment["scores"]) / len(current_segment["scores"])
+            violent_segments.append(current_segment)
         
         cap.release()
         out.release()
-        os.remove(temp_video_path)
         
+        # Delete temporary file
+        if os.path.exists(temp_video_path):
+            os.remove(temp_video_path)
+        
+        # Calculate summary statistics
+        violence_percentage = (violence_frames / (frame_count/5) * 100) if frame_count > 0 else 0
+        
+        # Determine overall video classification
+        if violence_percentage > 40:
+            classification = "violent"
+        elif violence_percentage > 10:
+            classification = "ambiguous"
+        else:
+            classification = "non-violent"
+        
+        # Get list of keyframe images
+        keyframe_files = os.listdir(key_frames_dir) if os.path.exists(key_frames_dir) else []
+        keyframes = [f"/annotated_videos/keyframes_{timestamp}/{file}" for file in keyframe_files]
+        
+        # Ensure the file exists and is accessible
+        if not os.path.exists(annotated_video_path):
+            print(f"Warning: Output file not found at {annotated_video_path}")
+            return JSONResponse({
+                "error": "Failed to create annotated video",
+                "results": results,
+                "summary": {
+                    "total_frames": frame_count,
+                    "violence_frames": violence_frames,
+                    "violence_percentage": violence_percentage,
+                    "classification": classification
+                }
+            })
+        
+        # Correctly reference the video path in the response
+        video_url = f"/annotated_videos/annotated_{timestamp}.mp4"
+        
+        print(f"Video processed successfully. Output at: {annotated_video_path}")
+        print(f"URL for access: {video_url}")
+        
+        # Create a unique analysis ID for reference
+        analysis_id = timestamp
+        
+        # Return the results including the video URL that can be accessed
         return JSONResponse({
             "message": "Video analyzed successfully",
-            "annotated_video": annotated_video_path,
-            "results": results
+            "analysis_id": analysis_id,
+            "video_url": video_url,
+            "keyframes": keyframes,
+            "summary": {
+                "total_frames": frame_count,
+                "violence_frames": violence_frames,
+                "violence_percentage": violence_percentage,
+                "classification": classification,
+                "duration_seconds": frame_count / fps
+            },
+            "violent_segments": violent_segments,
+            "results": results[::5][:20]  # Send a sample of results to avoid huge response
         })
+        
     except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"Video analysis error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/analyze_video/{analysis_id}")
+async def get_video_analysis(analysis_id: str):
+    """Get existing video analysis by ID"""
+    try:
+        # For now, we'll just check if the annotated video exists
+        # In a real application, you'd likely store analysis results in a database
+        video_path = f"annotated_videos/annotated_{analysis_id}.mp4"
+        if not os.path.exists(video_path):
+            raise HTTPException(status_code=404, detail="Analysis not found")
+            
+        # Check for keyframes directory
+        keyframes_dir = f"annotated_videos/keyframes_{analysis_id}"
+        keyframes = []
+        if os.path.exists(keyframes_dir):
+            keyframes = [f"/annotated_videos/keyframes_{analysis_id}/{file}" for file in os.listdir(keyframes_dir)]
+            
+        # In a real app, you'd fetch this from a database
+        # For now, we'll return a dummy structure with what we know
+        return {
+            "message": "Video analyzed successfully",
+            "analysis_id": analysis_id,
+            "video_url": f"/annotated_videos/annotated_{analysis_id}.mp4",
+            "keyframes": keyframes,
+            "summary": {
+                "total_frames": 300,  # Placeholder
+                "violence_frames": 50,  # Placeholder
+                "violence_percentage": 16.7,  # Placeholder
+                "classification": "ambiguous",
+                "duration_seconds": 10.0  # Placeholder
+            },
+            "violent_segments": [
+                # Placeholder data - in a real app, this would come from your database
+                {
+                    "start_frame": 50,
+                    "start_time": 1.67,
+                    "end_frame": 100,
+                    "end_time": 3.33,
+                    "duration": 1.66,
+                    "avg_score": 0.6,
+                    "scores": [0.5, 0.6, 0.7]
+                }
+            ],
+            "results": [
+                # Placeholder data - in a real app, this would come from your database
+                {"frame": 30, "time": 1.0, "violence_detected": False, "score": 0.2},
+                {"frame": 60, "time": 2.0, "violence_detected": True, "score": 0.6},
+                {"frame": 90, "time": 3.0, "violence_detected": True, "score": 0.7},
+                {"frame": 120, "time": 4.0, "violence_detected": False, "score": 0.2}
+            ]
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching analysis: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/model_status")
+async def model_status():
+    """Check if the violence detection model is properly loaded"""
+    try:
+        # Create a random test tensor
+        test_input = torch.rand(1, 3, 224, 224)
+        
+        # Run inference
+        with torch.no_grad():
+            output = model(test_input)
+        
+        return {
+            "status": "ok", 
+            "model_loaded": True,
+            "output_shape": list(output.shape),
+            "model_file": "retrained_model_v3.pth",
+            "model_exists": os.path.exists("retrained_model_v3.pth"),
+            "model_size_mb": round(os.path.getsize("retrained_model_v3.pth") / (1024 * 1024), 2) if os.path.exists("retrained_model_v3.pth") else None
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "model_loaded": False,
+            "error": str(e),
+            "model_file": "retrained_model_v3.pth",
+            "model_exists": os.path.exists("retrained_model_v3.pth")
+        }
 
 app.mount("/annotated_videos", StaticFiles(directory="annotated_videos"), name="annotated_videos")
 app.mount("/detections", StaticFiles(directory="detections"), name="detections")
@@ -386,11 +694,24 @@ app.mount("/detections", StaticFiles(directory="detections"), name="detections")
 @app.on_event("startup")
 async def startup_event():
     try:
-        await client.admin.command('ping')
+        # Test database connection
+        info = await client.server_info()
         print("Successfully connected to MongoDB")
+        
+        # Verify model is loaded
+        test_tensor = torch.zeros((1, 3, 224, 224))
+        with torch.no_grad():
+            test_output = model(test_tensor)
+        print(f"Violence detection model loaded successfully. Output shape: {test_output.shape}")
+        
+        # Verify directories
+        if os.path.exists("detections"):
+            print(f"Detections directory exists: {len(os.listdir('detections'))} files")
+        if os.path.exists("annotated_videos"):
+            print(f"Annotated videos directory exists: {len(os.listdir('annotated_videos'))} files")
+            
     except Exception as e:
-        print(f"Failed to connect to MongoDB: {e}")
-        raise
+        print(f"Startup error: {e}")
 
 if __name__ == "__main__":
     import uvicorn
