@@ -1,0 +1,8 @@
+backend/__pycache__
+
+backend/detections
+backend/venv
+
+frontend/node_modules
+
+frontend/.next
