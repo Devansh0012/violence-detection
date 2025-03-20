@@ -5,7 +5,7 @@ interface ViolenceData {
     violence: boolean;
     score: number;
     timestamp: string;
-    annotated_frame?: string;
+    annotated_frame: string;
 }
 
 interface LiveFeedProps {
@@ -20,17 +20,21 @@ const LiveFeed: React.FC<LiveFeedProps> = ({ onAlert }) => {
     const [violence, setViolence] = useState<ViolenceData | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [annotatedFrame, setAnnotatedFrame] = useState<string | null>(null);
+    const [connectionAttempts, setConnectionAttempts] = useState(0);
 
-    const processMessage = useCallback(async (event: MessageEvent) => {
-        // Expecting a JSON message containing violence info and a base64-encoded image.
+    const processMessage = useCallback((event: MessageEvent) => {
         try {
-            const data: ViolenceData = JSON.parse(typeof event.data === 'string' ? event.data : '');
+            const data: ViolenceData = JSON.parse(event.data);
+            console.log("Received data:", data);
+
             if (data.annotated_frame) {
                 setAnnotatedFrame(`data:image/jpeg;base64,${data.annotated_frame}`);
             }
+
             setViolence(data);
+
             if (data.violence) {
-                onAlert(`Violence detected: ${(data.score * 100).toFixed(1)}% confidence`);
+                onAlert(`Violence detected at ${new Date(data.timestamp).toLocaleTimeString()} with ${(data.score * 100).toFixed(1)}% confidence`);
             }
         } catch (err) {
             console.error('Error parsing WebSocket message:', err);
@@ -38,70 +42,87 @@ const LiveFeed: React.FC<LiveFeedProps> = ({ onAlert }) => {
     }, [onAlert]);
 
     const connectWebSocket = useCallback(() => {
-        const ws = new WebSocket('ws://localhost:8000/ws');
-        
-        ws.onopen = () => {
-            setIsConnected(true);
-            setError(null);
-            console.log('WebSocket connected');
-        };
+        if (connectionAttempts > 3) {
+            setError("Failed to connect after multiple attempts. Please check your server connection.");
+            return;
+        }
 
-        ws.onclose = () => {
-            setIsConnected(false);
-            setIsAnalyzing(false);
-            console.log('WebSocket disconnected');
-        };
+        try {
+            const ws = new WebSocket('ws://localhost:8000/ws');
 
-        ws.onerror = (error) => {
-            console.error('WebSocket error:', error);
-            setError('WebSocket connection failed');
-            setIsConnected(false);
-            setIsAnalyzing(false);
-        };
+            ws.onopen = () => {
+                setIsConnected(true);
+                setError(null);
+                setConnectionAttempts(0);
+                console.log('WebSocket connected');
+            };
 
-        ws.onmessage = processMessage;
+            ws.onclose = () => {
+                setIsConnected(false);
+                setIsAnalyzing(false);
+                console.log('WebSocket disconnected');
+            };
 
-        wsRef.current = ws;
-    }, [processMessage]);
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                setError('WebSocket connection failed. The server might be offline.');
+                setIsConnected(false);
+                setIsAnalyzing(false);
+                setConnectionAttempts(prev => prev + 1);
+            };
+
+            ws.onmessage = processMessage;
+
+            wsRef.current = ws;
+        } catch (error) {
+            console.error("Failed to create WebSocket:", error);
+            setError("Failed to create WebSocket connection");
+        }
+    }, [processMessage, connectionAttempts]);
 
     const captureFrame = useCallback(() => {
-        if (!isAnalyzing || !wsRef.current) return;
+        if (!isAnalyzing || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
 
         const imageSrc = webcamRef.current?.getScreenshot();
-        if (imageSrc && wsRef.current?.readyState === WebSocket.OPEN) {
+        if (imageSrc) {
             try {
                 const base64Data = imageSrc.split(',')[1];
                 const byteCharacters = atob(base64Data);
                 const byteArray = new Uint8Array(byteCharacters.length);
-                
+
                 for (let i = 0; i < byteCharacters.length; i++) {
                     byteArray[i] = byteCharacters.charCodeAt(i);
                 }
-                
+
                 const blob = new Blob([byteArray], { type: 'image/jpeg' });
                 wsRef.current.send(blob);
             } catch (err) {
                 console.error('Error sending frame:', err);
-                setError('Error sending frame');
             }
         }
-        // Use setTimeout for a controlled frame rate (e.g. 5 fps)
-        setTimeout(captureFrame, 200);
+
+        // Schedule next frame capture
+        requestAnimationFrame(captureFrame);
     }, [isAnalyzing]);
 
     const startAnalysis = () => {
         if (!isConnected) {
             connectWebSocket();
+            // Small delay to allow connection to establish
+            setTimeout(() => {
+                if (wsRef.current?.readyState === WebSocket.OPEN) {
+                    setIsAnalyzing(true);
+                    requestAnimationFrame(captureFrame);
+                }
+            }, 1000);
+        } else {
+            setIsAnalyzing(true);
+            requestAnimationFrame(captureFrame);
         }
-        setIsAnalyzing(true);
-        setTimeout(captureFrame, 100);
     };
 
     const stopAnalysis = () => {
         setIsAnalyzing(false);
-        if (wsRef.current) {
-            wsRef.current.close();
-        }
     };
 
     useEffect(() => {
@@ -113,41 +134,44 @@ const LiveFeed: React.FC<LiveFeedProps> = ({ onAlert }) => {
     }, []);
 
     return (
-        <div className="max-w-2xl mx-auto p-6 bg-white rounded-lg shadow-lg">
-            <h2 className="text-2xl font-bold mb-4">Live Violence Detection</h2>
-            
+        <div className="bg-gray-800 p-6 rounded-xl shadow-lg">
+            <h2 className="text-xl font-semibold mb-4">Live Violence Detection</h2>
+
             <div className="relative">
-                {annotatedFrame ? (
-                    <img 
-                        src={annotatedFrame} 
-                        className="w-full rounded-lg"
-                        alt="Processed frame"
-                    />
-                ) : (
-                    <Webcam
-                        ref={webcamRef}
-                        screenshotFormat="image/jpeg"
-                        className="w-full rounded-lg"
-                        videoConstraints={{
-                            width: 640,
-                            height: 480,
-                            facingMode: "user"
-                        }}
-                    />
-                )}
-                
-                <div className="mt-4 space-x-4">
+                <div className="rounded-lg overflow-hidden">
+                    {annotatedFrame && isAnalyzing ? (
+                        <img
+                            src={annotatedFrame}
+                            className="w-full rounded-lg"
+                            alt="Processed frame with annotations"
+                        />
+                    ) : (
+                        <img
+                            src={annotatedFrame || '/placeholder.jpg'}
+                            className="w-full rounded-lg"
+                            alt="Processed frame"
+                        />
+                    )}
+
+                    {violence && violence.violence && (
+                        <div className="absolute top-4 left-4 bg-red-600 text-white px-3 py-1 rounded-lg text-sm font-bold">
+                            Violence Detected: {(violence.score * 100).toFixed(1)}%
+                        </div>
+                    )}
+                </div>
+
+                <div className="mt-4 flex justify-center space-x-4">
                     {!isAnalyzing ? (
                         <button
                             onClick={startAnalysis}
-                            className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition duration-200"
+                            className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-6 rounded-lg transition duration-200"
                         >
                             Start Analysis
                         </button>
                     ) : (
                         <button
                             onClick={stopAnalysis}
-                            className="bg-red-600 hover:bg-red-700 text-white font-medium py-2 px-4 rounded-lg transition duration-200"
+                            className="bg-red-600 hover:bg-red-700 text-white font-medium py-2 px-6 rounded-lg transition duration-200"
                         >
                             Stop Analysis
                         </button>
@@ -156,20 +180,19 @@ const LiveFeed: React.FC<LiveFeedProps> = ({ onAlert }) => {
             </div>
 
             {error && (
-                <div className="mt-4 p-3 bg-red-100 text-red-700 rounded-lg">
+                <div className="mt-4 p-3 bg-red-500/20 border border-red-500/50 text-red-400 rounded-lg">
                     {error}
                 </div>
             )}
 
             {violence && (
-                <div className={`mt-4 p-4 rounded-lg ${
-                    violence.violence ? 'bg-red-100' : 'bg-green-100'
-                }`}>
+                <div className={`mt-4 p-4 rounded-lg ${violence.violence ? 'bg-red-500/20 border border-red-500/50' : 'bg-green-500/20 border border-green-500/50'
+                    } ${violence.violence ? 'text-red-400' : 'text-green-400'}`}>
                     <p className="font-bold mb-2">
-                        {violence.violence ? 'Violence Detected!' : 'No Violence Detected'}
+                        {violence.violence ? '⚠️ Violence Detected!' : '✅ No Violence Detected'}
                     </p>
                     <p>Confidence: {(violence.score * 100).toFixed(2)}%</p>
-                    <p className="text-sm text-gray-600">
+                    <p className="text-sm opacity-75">
                         {new Date(violence.timestamp).toLocaleString()}
                     </p>
                 </div>

@@ -16,7 +16,9 @@ import motor.motor_asyncio
 from passlib.context import CryptContext
 from jose import jwt, JWTError
 from typing import Optional
+from fastapi.staticfiles import StaticFiles 
 import os
+import base64
 
 # Constants
 SECRET_KEY = "your-secret-key-here"  # Change this to a secure key
@@ -60,11 +62,12 @@ def detect_objects(frame):
     return predictions[0]
 
 def draw_bounding_boxes(frame, detections):
-    # Lowered threshold from 0.5 to 0.3
-    for box, score in zip(detections['boxes'], detections['scores']):
+    for box, score, label in zip(detections['boxes'], detections['scores'], detections['labels']):
         if score > 0.3:
             x1, y1, x2, y2 = map(int, box)
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+            cv2.putText(frame, f"{label}: {score:.2f}", (x1, y1-10), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 2)
     return frame
 
 # Image preprocessing for violence detection
@@ -214,22 +217,93 @@ async def analyze_video(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# @app.websocket("/ws")
+# async def websocket_endpoint(websocket: WebSocket):
+#     await websocket.accept()
+#     cap = cv2.VideoCapture("rtsp://your_camera_rtsp_url")
+#     try:
+#         while True:
+#             data = await websocket.receive_bytes()
+#             nparr = np.frombuffer(data, np.uint8)
+#             frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            
+#             if frame is None:
+#                 continue
+                
+#             # Detect objects (people) in the frame
+#             detections = detect_objects(frame)
+            
+#             # Violence prediction
+#             score = predict_violence(frame)
+#             is_violent = score > 0.2
+            
+#             # Draw bounding boxes - highlight violent areas in red
+#             annotated_frame = frame.copy()
+#             for box, score, label in zip(detections['boxes'], detections['scores'], detections['labels']):
+#                 if score > 0.3:  # Only show confident detections
+#                     x1, y1, x2, y2 = map(int, box)
+#                     # Person is label 1 in COCO dataset
+#                     if label == 1:  
+#                         # Use red for violent scenes, green otherwise
+#                         color = (0, 0, 255) if is_violent else (0, 255, 0)
+#                         thickness = 2 if is_violent else 1
+                        
+#                         # Draw rectangle around person
+#                         cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, thickness)
+                        
+#                         # Add confidence score text
+#                         if is_violent:
+#                             conf_text = f"Violence: {score:.2f}"
+#                             cv2.putText(annotated_frame, conf_text, (x1, y1-10), 
+#                                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            
+#             # If violence detected, save the frame
+#             if is_violent:
+#                 timestamp = datetime.datetime.now().isoformat()
+#                 detection_path = f"detections/{timestamp}.jpg"
+#                 cv2.imwrite(detection_path, annotated_frame)
+                
+#                 # Save to database
+#                 await detections_collection.insert_one({
+#                     "timestamp": timestamp,
+#                     "score": float(score),
+#                     "image_path": detection_path
+#                 })
+            
+#             # Encode the annotated frame as Base64 and send it back
+#             _, jpeg = cv2.imencode('.jpg', annotated_frame)
+#             import base64
+#             encoded_img = base64.b64encode(jpeg.tobytes()).decode('utf-8')
+            
+#             await websocket.send_json({
+#                 "violence": is_violent,
+#                 "score": float(score),
+#                 "timestamp": datetime.datetime.now().isoformat(),
+#                 "annotated_frame": encoded_img
+#             })
+#     except WebSocketDisconnect:
+#         print("Client disconnected")
+#     except Exception as e:
+#         print(f"WebSocket error: {str(e)}")
+#         await websocket.close()
+# Replace the websocket_endpoint with RTSP processing
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
+    cap = cv2.VideoCapture("rtsp://your_camera_rtsp_url")  # Replace with your RTSP URL
     try:
         while True:
-            data = await websocket.receive_bytes()
-            nparr = np.frombuffer(data, np.uint8)
-            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            ret, frame = cap.read()
+            if not ret:
+                break
             
+            # Process frame
             detections = detect_objects(frame)
             annotated_frame = draw_bounding_boxes(frame.copy(), detections)
-            
-            # Violence prediction
             score = predict_violence(frame)
             is_violent = score > 0.2
             
+            # Save detection if violent
             if is_violent:
                 timestamp = datetime.datetime.now().isoformat()
                 detection_path = f"detections/{timestamp}.jpg"
@@ -240,9 +314,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     "image_path": detection_path
                 })
             
-            # Encode the annotated frame as Base64 and send a combined JSON message
+            # Encode and send
             _, jpeg = cv2.imencode('.jpg', annotated_frame)
-            import base64
             encoded_img = base64.b64encode(jpeg.tobytes()).decode('utf-8')
             await websocket.send_json({
                 "violence": is_violent,
@@ -250,10 +323,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 "timestamp": datetime.datetime.now().isoformat(),
                 "annotated_frame": encoded_img
             })
-    except WebSocketDisconnect:
-        print("Client disconnected")
     except Exception as e:
         print(f"WebSocket error: {str(e)}")
+    finally:
+        cap.release()
         await websocket.close()
 
 @app.post("/analyze_video")
@@ -306,6 +379,9 @@ async def analyze_video_file(file: UploadFile = File(...)):
         })
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+app.mount("/annotated_videos", StaticFiles(directory="annotated_videos"), name="annotated_videos")
+app.mount("/detections", StaticFiles(directory="detections"), name="detections")
 
 @app.on_event("startup")
 async def startup_event():
