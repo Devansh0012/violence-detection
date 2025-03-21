@@ -19,6 +19,7 @@ from typing import Optional
 from fastapi.staticfiles import StaticFiles 
 import os
 import base64
+from flask_cors import CORS
 
 # Constants
 SECRET_KEY = "your-secret-key-here"  # Change this to a secure key
@@ -90,12 +91,12 @@ except Exception as e:
 
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
+CORS(app, resources={r"/*": {"origins": "*"}})
 # FastAPI setup
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],  # Update with your frontend URL
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "https://violence-detection-tan.vercel.app"],  # Update with your frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
