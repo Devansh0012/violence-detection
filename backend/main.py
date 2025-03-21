@@ -3,6 +3,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 from torchvision.models.detection import fasterrcnn_mobilenet_v3_large_320_fpn
 from fastapi import FastAPI, WebSocket, HTTPException, UploadFile, File, WebSocketDisconnect
 from fastapi.responses import JSONResponse, FileResponse
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import torch
@@ -383,10 +384,12 @@ async def websocket_endpoint(websocket: WebSocket):
             cap.release()
         await websocket.close()
 
+# Replace your existing /analyze_video endpoint with the following:
+
 @app.post("/analyze_video")
 async def analyze_video_file(file: UploadFile = File(...)):
     try:
-        # Save the uploaded video temporarily
+        # Save the uploaded video temporarily to disk
         temp_video_path = "temp_video.mp4"
         with open(temp_video_path, "wb") as temp_file:
             content = await file.read()
@@ -396,7 +399,6 @@ async def analyze_video_file(file: UploadFile = File(...)):
         if not cap.isOpened():
             raise HTTPException(status_code=400, detail="Cannot open video file")
         
-        # Get video properties
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -408,128 +410,65 @@ async def analyze_video_file(file: UploadFile = File(...)):
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         out = cv2.VideoWriter(annotated_video_path, fourcc, fps, (width, height))
         
-        # Analysis results
-        results = []
+        # Initialize summary statistics and samples
         frame_count = 0
         violence_frames = 0
-        
-        # Track violent segments for detailed analysis
         violent_segments = []
         current_segment = None
+        sample_results = []
+        sample_interval = max(1, total_frames // 50)  # sample at most 50 results
         
-        # Save key frames for detailed analysis
-        key_frames_dir = f"annotated_videos/keyframes_{timestamp}"
-        os.makedirs(key_frames_dir, exist_ok=True)
-        
-        # Process frames
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
-                
             frame_count += 1
             
-            # Only analyze every 5th frame to speed up processing for large videos
-            # but still write every frame to the output video
+            # Process every 5th frame for violence detection
             if frame_count % 5 == 0 or frame_count == 1:
-                # Analyze for violence
                 violence_score = predict_violence(frame)
                 is_violent = violence_score > 0.3
                 
-                # Track violent segments
+                # Update violent segments information
                 if is_violent:
                     violence_frames += 1
                     if current_segment is None:
-                        # Start a new segment
                         current_segment = {
                             "start_frame": frame_count,
                             "start_time": frame_count / fps,
                             "scores": [violence_score]
                         }
                     else:
-                        # Continue current segment
                         current_segment["scores"].append(violence_score)
                 else:
-                    # End the current segment if it exists
                     if current_segment is not None:
-                        current_segment["end_frame"] = frame_count - 5  # Account for the skipped frames
+                        current_segment["end_frame"] = frame_count - 5
                         current_segment["end_time"] = current_segment["end_frame"] / fps
                         current_segment["duration"] = current_segment["end_time"] - current_segment["start_time"]
                         current_segment["avg_score"] = sum(current_segment["scores"]) / len(current_segment["scores"])
                         violent_segments.append(current_segment)
                         current_segment = None
                 
-                # Detect objects (people)
-                detections = detect_objects(frame)
-                
-                # Create annotated frame
+                # Annotate frame with a simple status text
                 annotated_frame = frame.copy()
-                
-                # Draw bounding boxes
-                for box, score, label in zip(detections['boxes'], detections['scores'], detections['labels']):
-                    if score > 0.3:
-                        x1, y1, x2, y2 = map(int, box)
-                        # Person is label 1 in COCO dataset
-                        if label == 1:
-                            # Red for violence, green for non-violence
-                            color = (0, 0, 255) if is_violent else (0, 255, 0)
-                            thickness = 3 if is_violent else 1
-                            
-                            # Draw rectangle around person
-                            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, thickness)
-                            
-                            # Add violence score text if violent
-                            if is_violent:
-                                text = f"Violence: {violence_score:.2f}"
-                                cv2.putText(annotated_frame, text, (x1, y1-10), 
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-                
-                # Add overall violence indicator at the top
-                status_text = f"VIOLENCE DETECTED: {violence_score:.2f}" if is_violent else "No Violence"
-                cv2.putText(annotated_frame, status_text, (10, 30), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255) if is_violent else (0, 255, 0), 2)
-                
-                # Add frame number and timestamp
-                timestamp_text = f"Frame: {frame_count}/{total_frames} - Time: {frame_count/fps:.2f}s"
-                cv2.putText(annotated_frame, timestamp_text, (10, height - 10), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-                
-                # Store frame result
-                results.append({
+                status_text = f"Violence: {violence_score:.2f}" if is_violent else "No Violence"
+                cv2.putText(annotated_frame, status_text, (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1,
+                            (0, 0, 255) if is_violent else (0, 255, 0), 2)
+            else:
+                annotated_frame = frame
+            
+            out.write(annotated_frame)
+            
+            # Optional sampling to reduce memory use
+            if frame_count % sample_interval == 0:
+                sample_results.append({
                     "frame": frame_count,
                     "time": frame_count / fps,
-                    "violence_detected": is_violent,
-                    "score": float(violence_score)
+                    "violence_detected": is_violent if 'is_violent' in locals() else False,
+                    "score": violence_score if 'violence_score' in locals() else 0.0
                 })
-                
-                # Save key frames for violent segments
-                if is_violent and (frame_count % 30 == 0 or len(violent_segments) == 0 or violent_segments[-1]["end_frame"] == frame_count - 5):
-                    keyframe_path = f"{key_frames_dir}/frame_{frame_count}.jpg"
-                    cv2.imwrite(keyframe_path, annotated_frame)
-            else:
-                # For frames we don't analyze, carry forward the last analysis result for consistent video
-                if results:
-                    is_violent = results[-1]["violence_detected"]
-                    violence_score = results[-1]["score"]
-                else:
-                    is_violent = False
-                    violence_score = 0.0
-                    
-                # Create simple annotated frame with just the status
-                annotated_frame = frame.copy()
-                status_text = f"VIOLENCE DETECTED: {violence_score:.2f}" if is_violent else "No Violence"
-                cv2.putText(annotated_frame, status_text, (10, 30), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255) if is_violent else (0, 255, 0), 2)
-                           
-                # Add frame number and timestamp
-                timestamp_text = f"Frame: {frame_count}/{total_frames} - Time: {frame_count/fps:.2f}s"
-                cv2.putText(annotated_frame, timestamp_text, (10, height - 10), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-            
-            # Write the annotated frame to the output video
-            out.write(annotated_frame)
         
-        # Close the last segment if still open
         if current_segment is not None:
             current_segment["end_frame"] = frame_count
             current_segment["end_time"] = frame_count / fps
@@ -539,15 +478,10 @@ async def analyze_video_file(file: UploadFile = File(...)):
         
         cap.release()
         out.release()
-        
-        # Delete temporary file
         if os.path.exists(temp_video_path):
             os.remove(temp_video_path)
         
-        # Calculate summary statistics
-        violence_percentage = (violence_frames / (frame_count/5) * 100) if frame_count > 0 else 0
-        
-        # Determine overall video classification
+        violence_percentage = (violence_frames / (frame_count / 5) * 100) if frame_count > 0 else 0
         if violence_percentage > 40:
             classification = "violent"
         elif violence_percentage > 10:
@@ -555,39 +489,12 @@ async def analyze_video_file(file: UploadFile = File(...)):
         else:
             classification = "non-violent"
         
-        # Get list of keyframe images
-        keyframe_files = os.listdir(key_frames_dir) if os.path.exists(key_frames_dir) else []
-        keyframes = [f"/annotated_videos/keyframes_{timestamp}/{file}" for file in keyframe_files]
-        
-        # Ensure the file exists and is accessible
-        if not os.path.exists(annotated_video_path):
-            print(f"Warning: Output file not found at {annotated_video_path}")
-            return JSONResponse({
-                "error": "Failed to create annotated video",
-                "results": results,
-                "summary": {
-                    "total_frames": frame_count,
-                    "violence_frames": violence_frames,
-                    "violence_percentage": violence_percentage,
-                    "classification": classification
-                }
-            })
-        
-        # Correctly reference the video path in the response
         video_url = f"/annotated_videos/annotated_{timestamp}.mp4"
         
-        print(f"Video processed successfully. Output at: {annotated_video_path}")
-        print(f"URL for access: {video_url}")
-        
-        # Create a unique analysis ID for reference
-        analysis_id = timestamp
-        
-        # Return the results including the video URL that can be accessed
-        return JSONResponse({
-            "message": "Video analyzed successfully",
-            "analysis_id": analysis_id,
+        # Assemble analysis document and store in MongoDB
+        analysis_document = {
+            "analysis_id": timestamp,
             "video_url": video_url,
-            "keyframes": keyframes,
             "summary": {
                 "total_frames": frame_count,
                 "violence_frames": violence_frames,
@@ -596,23 +503,24 @@ async def analyze_video_file(file: UploadFile = File(...)):
                 "duration_seconds": frame_count / fps
             },
             "violent_segments": violent_segments,
-            "results": results[::5][:20]  # Send a sample of results to avoid huge response
-        })
+            "sample_results": sample_results,
+            "created_at": datetime.datetime.utcnow()
+        }
+        await db["analyses"].insert_one(analysis_document)
+        
+        return JSONResponse(analysis_document)
         
     except Exception as e:
         import traceback
         traceback.print_exc()
-        print(f"Video analysis error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/analyze_video/{analysis_id}")
 async def get_video_analysis(analysis_id: str):
     """Get existing video analysis by ID"""
     try:
-        # For now, we'll just check if the annotated video exists
-        # In a real application, you'd likely store analysis results in a database
-        video_path = f"annotated_videos/annotated_{analysis_id}.mp4"
-        if not os.path.exists(video_path):
+        analysis = await db["analyses"].find_one({"analysis_id": analysis_id})
+        if not analysis:
             raise HTTPException(status_code=404, detail="Analysis not found")
             
         # Check for keyframes directory
@@ -620,41 +528,10 @@ async def get_video_analysis(analysis_id: str):
         keyframes = []
         if os.path.exists(keyframes_dir):
             keyframes = [f"/annotated_videos/keyframes_{analysis_id}/{file}" for file in os.listdir(keyframes_dir)]
-            
-        # In a real app, you'd fetch this from a database
-        # For now, we'll return a dummy structure with what we know
-        return {
-            "message": "Video analyzed successfully",
-            "analysis_id": analysis_id,
-            "video_url": f"/annotated_videos/annotated_{analysis_id}.mp4",
-            "keyframes": keyframes,
-            "summary": {
-                "total_frames": 300,  # Placeholder
-                "violence_frames": 50,  # Placeholder
-                "violence_percentage": 16.7,  # Placeholder
-                "classification": "ambiguous",
-                "duration_seconds": 10.0  # Placeholder
-            },
-            "violent_segments": [
-                # Placeholder data - in a real app, this would come from your database
-                {
-                    "start_frame": 50,
-                    "start_time": 1.67,
-                    "end_frame": 100,
-                    "end_time": 3.33,
-                    "duration": 1.66,
-                    "avg_score": 0.6,
-                    "scores": [0.5, 0.6, 0.7]
-                }
-            ],
-            "results": [
-                # Placeholder data - in a real app, this would come from your database
-                {"frame": 30, "time": 1.0, "violence_detected": False, "score": 0.2},
-                {"frame": 60, "time": 2.0, "violence_detected": True, "score": 0.6},
-                {"frame": 90, "time": 3.0, "violence_detected": True, "score": 0.7},
-                {"frame": 120, "time": 4.0, "violence_detected": False, "score": 0.2}
-            ]
-        }
+        
+        analysis["keyframes"] = keyframes
+        # Use jsonable_encoder to handle non-serializable types (like datetime)
+        return JSONResponse(content=jsonable_encoder(analysis))
     except HTTPException:
         raise
     except Exception as e:
