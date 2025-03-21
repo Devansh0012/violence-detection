@@ -1,6 +1,7 @@
 'use client'
 import { useState, useEffect } from 'react'
 import { fetchAmbiguousSamples, labelSample } from '../lib/api'
+import Image from 'next/image'
 
 interface Sample {
   id: number;
@@ -64,14 +65,16 @@ export default function ActiveLearningPanel() {
   return (
     <div className="bg-gray-800 p-6 rounded-xl">
       <h2 className="text-xl font-semibold mb-4">Active Learning Interface</h2>
-      
+
       <div className="space-y-4">
         {Array.isArray(samples) && samples.length > 0 ? (
           samples.map(sample => (
             <div key={sample.id} className="bg-gray-700 p-4 rounded-lg">
               <div className="flex items-center gap-4">
-                <img 
+                <Image
                   src={sample.image}
+                  width={96}
+                  height={96}
                   className="w-24 h-24 object-cover rounded"
                   alt="Ambiguous sample"
                 />

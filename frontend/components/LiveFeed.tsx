@@ -1,5 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import Webcam from 'react-webcam';
+import Image from 'next/image';
 
 interface ViolenceData {
     violence: boolean;
@@ -183,14 +184,14 @@ const LiveFeed: React.FC<LiveFeedProps> = ({ onAlert }) => {
                 wsRef.current.close();
             }
         };
-    }, []);
+    }, [isAnalyzing]);
 
     // When camera choice changes, reset the analysis
     useEffect(() => {
         if (isAnalyzing) {
             stopAnalysis();
         }
-    }, [useRtsp, useSystemCamera]);
+    }, [useRtsp, useSystemCamera, isAnalyzing]);
 
     return (
         <div className="bg-gray-800 p-6 rounded-xl shadow-lg">
@@ -257,11 +258,13 @@ const LiveFeed: React.FC<LiveFeedProps> = ({ onAlert }) => {
             <div className="relative">
                 <div className="rounded-lg overflow-hidden">
                     {annotatedFrame && isAnalyzing ? (
-                        <img 
-                            src={annotatedFrame} 
-                            className="w-full rounded-lg"
-                            alt="Processed frame with annotations"
-                        />
+                        <Image 
+                        src={annotatedFrame} 
+                        width={640}
+                        height={480}
+                        className="w-full rounded-lg"
+                        alt="Processed frame with annotations"
+                      />
                     ) : (
                         !useRtsp && !useSystemCamera ? (
                             <Webcam

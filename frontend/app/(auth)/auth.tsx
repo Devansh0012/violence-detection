@@ -24,8 +24,12 @@ export default function Auth() {
                 await signup(auth.username, auth.password);
                 setIsLogin(true);
             }
-        } catch (err: any) {
-            setError(err.response?.data?.detail || 'An error occurred');
+        } catch (err: unknown) {
+            if (err instanceof Error) {
+                setError(err.message || 'An error occurred');
+            } else {
+                setError('An unknown error occurred');
+            }
         } finally {
             setLoading(false);
         }

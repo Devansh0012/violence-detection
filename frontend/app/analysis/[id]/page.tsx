@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { useParams, useSearchParams } from 'next/navigation';
+import Image from 'next/image';
 
 interface ViolentSegment {
   start_frame: number;
@@ -39,7 +40,7 @@ export default function AnalysisPage() {
   const searchParams = useSearchParams();
   const analysisId = params?.id as string;
   const videoUrl = searchParams?.get('video');
-  
+
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [analysisData, setAnalysisData] = useState<AnalysisData | null>(null);
@@ -56,7 +57,7 @@ export default function AnalysisPage() {
           setLoading(false);
           return;
         }
-        
+
         // Make request to retrieve the analysis data
         const response = await fetch(`http://localhost:8000/analyze_video/${analysisId}`).catch(() => {
           // Fallback mock data if endpoint doesn't exist yet
@@ -121,12 +122,12 @@ export default function AnalysisPage() {
 
   const renderClassificationBadge = () => {
     if (!analysisData) return null;
-    
+
     const { classification } = analysisData.summary;
-    
+
     let badgeColor = "";
     let badgeText = "";
-    
+
     switch (classification) {
       case "violent":
         badgeColor = "bg-red-600";
@@ -141,7 +142,7 @@ export default function AnalysisPage() {
         badgeText = "No Violent Content";
         break;
     }
-    
+
     return (
       <div className={`${badgeColor} text-white font-bold py-2 px-4 rounded-md inline-block`}>
         {badgeText}
@@ -166,7 +167,7 @@ export default function AnalysisPage() {
         <div className="max-w-4xl mx-auto bg-gray-800 p-6 rounded-lg shadow-lg">
           <h1 className="text-2xl font-bold text-red-500 mb-4">Error</h1>
           <p className="text-gray-300">{error || "Failed to load analysis data"}</p>
-          <button 
+          <button
             onClick={() => window.history.back()}
             className="mt-4 bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded"
           >
@@ -185,19 +186,19 @@ export default function AnalysisPage() {
             <h1 className="text-2xl md:text-3xl font-bold">Video Analysis Results</h1>
             <p className="text-gray-400 mt-1">Analysis ID: {analysisData.analysis_id}</p>
           </div>
-          
+
           {renderClassificationBadge()}
         </div>
-        
+
         <div className="bg-gray-800 rounded-lg shadow-lg overflow-hidden mb-8">
-          <video 
-            src={`http://localhost:8000${analysisData.video_url}`} 
+          <video
+            src={`http://localhost:8000${analysisData.video_url}`}
             controls
             className="w-full"
             poster={analysisData.keyframes.length > 0 ? `http://localhost:8000${analysisData.keyframes[0]}` : undefined}
           />
         </div>
-        
+
         <div className="mb-8">
           <div className="flex border-b border-gray-700">
             <button
@@ -219,12 +220,12 @@ export default function AnalysisPage() {
               Timeline
             </button>
           </div>
-          
+
           <div className="bg-gray-800 p-6 rounded-lg shadow-lg mt-4">
             {activeTab === 'summary' && (
               <div>
                 <h2 className="text-xl font-semibold mb-4">Violence Analysis Summary</h2>
-                
+
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div className="bg-gray-750 p-4 rounded-lg">
                     <h3 className="text-lg font-medium text-gray-300 mb-2">Video Information</h3>
@@ -241,35 +242,34 @@ export default function AnalysisPage() {
                         <span className="text-gray-400">Classification:</span>
                         <span className={
                           analysisData.summary.classification === 'violent' ? 'text-red-500' :
-                          analysisData.summary.classification === 'ambiguous' ? 'text-yellow-500' :
-                          'text-green-500'
+                            analysisData.summary.classification === 'ambiguous' ? 'text-yellow-500' :
+                              'text-green-500'
                         }>
-                          {analysisData.summary.classification.charAt(0).toUpperCase() + 
-                           analysisData.summary.classification.slice(1)}
+                          {analysisData.summary.classification.charAt(0).toUpperCase() +
+                            analysisData.summary.classification.slice(1)}
                         </span>
                       </li>
                     </ul>
                   </div>
-                  
+
                   <div className="bg-gray-750 p-4 rounded-lg">
                     <h3 className="text-lg font-medium text-gray-300 mb-2">Violence Statistics</h3>
-                    
+
                     <div className="mb-4">
                       <div className="flex justify-between text-sm mb-1">
                         <span>Violence Detection</span>
                         <span>{Math.round(analysisData.summary.violence_percentage)}%</span>
                       </div>
                       <div className="w-full bg-gray-700 rounded-full h-2">
-                        <div 
-                          className={`h-full rounded-full ${
-                            analysisData.summary.violence_percentage > 40 ? 'bg-red-600' :
-                            analysisData.summary.violence_percentage > 10 ? 'bg-yellow-600' :
-                            'bg-green-600'
-                          } w-[${Math.min(100, analysisData.summary.violence_percentage)}%]`}
+                        <div
+                          className={`h-full rounded-full ${analysisData.summary.violence_percentage > 40 ? 'bg-red-600' :
+                              analysisData.summary.violence_percentage > 10 ? 'bg-yellow-600' :
+                                'bg-green-600'
+                            } w-[${Math.min(100, analysisData.summary.violence_percentage)}%]`}
                         ></div>
                       </div>
                     </div>
-                    
+
                     <ul className="space-y-2">
                       <li className="flex justify-between">
                         <span className="text-gray-400">Violent Frames:</span>
@@ -282,10 +282,10 @@ export default function AnalysisPage() {
                     </ul>
                   </div>
                 </div>
-                
+
                 <div className="mt-6">
                   <h3 className="text-lg font-medium text-gray-300 mb-3">Violent Segments</h3>
-                  
+
                   {analysisData.violent_segments.length > 0 ? (
                     <div className="overflow-x-auto">
                       <table className="min-w-full text-sm">
@@ -306,11 +306,10 @@ export default function AnalysisPage() {
                               <td className="py-3 px-4">{formatTime(segment.end_time)}</td>
                               <td className="py-3 px-4">{segment.duration.toFixed(1)}s</td>
                               <td className="py-3 px-4">
-                                <span className={`font-medium ${
-                                  segment.avg_score > 0.7 ? 'text-red-500' :
-                                  segment.avg_score > 0.5 ? 'text-yellow-500' :
-                                  'text-blue-500'
-                                }`}>
+                                <span className={`font-medium ${segment.avg_score > 0.7 ? 'text-red-500' :
+                                    segment.avg_score > 0.5 ? 'text-yellow-500' :
+                                      'text-blue-500'
+                                  }`}>
                                   {(segment.avg_score * 100).toFixed(1)}%
                                 </span>
                               </td>
@@ -325,35 +324,38 @@ export default function AnalysisPage() {
                 </div>
               </div>
             )}
-            
+
             {activeTab === 'keyframes' && (
               <div>
                 <h2 className="text-xl font-semibold mb-4">Key Violent Frames</h2>
-                
+
                 {analysisData.keyframes.length > 0 ? (
                   <div>
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 mb-6">
                       {analysisData.keyframes.map((frame, index) => (
-                        <div 
+                        <div
                           key={index}
-                          className={`relative cursor-pointer rounded overflow-hidden ${
-                            selectedKeyframe === frame ? 'ring-2 ring-blue-500' : ''
-                          }`}
+                          className={`relative cursor-pointer rounded overflow-hidden ${selectedKeyframe === frame ? 'ring-2 ring-blue-500' : ''
+                            }`}
                           onClick={() => setSelectedKeyframe(frame)}
                         >
-                          <img 
+                          <Image
                             src={`http://localhost:8000${frame}`}
+                            width={96}
+                            height={96}
                             alt={`Violence detection frame ${index + 1}`}
                             className="w-full h-24 object-cover"
                           />
                         </div>
                       ))}
                     </div>
-                    
+
                     {selectedKeyframe && (
                       <div className="bg-gray-900 p-2 rounded-lg">
-                        <img 
+                        <Image
                           src={`http://localhost:8000${selectedKeyframe}`}
+                          width={640}
+                          height={480}
                           alt="Selected violence frame"
                           className="w-full rounded"
                         />
@@ -365,11 +367,11 @@ export default function AnalysisPage() {
                 )}
               </div>
             )}
-            
+
             {activeTab === 'timeline' && (
               <div>
                 <h2 className="text-xl font-semibold mb-4">Violence Detection Timeline</h2>
-                
+
                 {analysisData.results.length > 0 ? (
                   <div>
                     <div className="relative h-16 mb-6">
@@ -377,7 +379,7 @@ export default function AnalysisPage() {
                         {analysisData.violent_segments.map((segment, index) => {
                           const startPercent = (segment.start_time / analysisData.summary.duration_seconds) * 100;
                           const widthPercent = (segment.duration / analysisData.summary.duration_seconds) * 100;
-                          
+
                           return (
                             <div
                               key={index}
@@ -387,25 +389,25 @@ export default function AnalysisPage() {
                           );
                         })}
                       </div>
-                      
+
                       <div className="absolute top-6 left-0 right-0 h-8">
                         {[0, 0.25, 0.5, 0.75, 1].map((point) => {
                           const time = point * analysisData.summary.duration_seconds;
                           let leftClass = '';
-                          if(point === 0) {
+                          if (point === 0) {
                             leftClass = 'left-0';
-                          } else if(point === 0.25) {
+                          } else if (point === 0.25) {
                             leftClass = 'left-[25%]';
-                          } else if(point === 0.5) {
+                          } else if (point === 0.5) {
                             leftClass = 'left-[50%]';
-                          } else if(point === 0.75) {
+                          } else if (point === 0.75) {
                             leftClass = 'left-[75%]';
-                          } else if(point === 1) {
+                          } else if (point === 1) {
                             leftClass = 'left-[100%]';
                           }
-                          
+
                           return (
-                            <div 
+                            <div
                               key={point}
                               className={`absolute transform -translate-x-1/2 ${leftClass}`}
                             >
@@ -416,7 +418,7 @@ export default function AnalysisPage() {
                         })}
                       </div>
                     </div>
-                    
+
                     <div className="overflow-x-auto">
                       <table className="min-w-full text-sm">
                         <thead>
@@ -444,12 +446,11 @@ export default function AnalysisPage() {
                                 )}
                               </td>
                               <td className="py-3 px-4">
-                                <span className={`font-medium ${
-                                  result.score > 0.7 ? 'text-red-500' :
-                                  result.score > 0.5 ? 'text-yellow-500' :
-                                  result.score > 0.3 ? 'text-orange-500' :
-                                  'text-green-500'
-                                }`}>
+                                <span className={`font-medium ${result.score > 0.7 ? 'text-red-500' :
+                                    result.score > 0.5 ? 'text-yellow-500' :
+                                      result.score > 0.3 ? 'text-orange-500' :
+                                        'text-green-500'
+                                  }`}>
                                   {(result.score * 100).toFixed(1)}%
                                 </span>
                               </td>

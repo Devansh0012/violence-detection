@@ -1,19 +1,14 @@
 'use client';
 
 import React, { useState } from "react";
-import { useRouter } from 'next/navigation';
-import { usePathname } from 'next/navigation';
 
 const VideoUpload: React.FC = () => {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [message, setMessage] = useState<string>("");
   const [status, setStatus] = useState<"idle" | "uploading" | "success" | "error">("idle");
   const [progress, setProgress] = useState<number>(0);
-  const [analysisData, setAnalysisData] = useState<any>(null);
+  //const [analysisData, setAnalysisData] = useState<null | Record<string, unknown>>(null);
   
-  // Only use router for navigation after successful upload
-  const router = useRouter();
-  const pathname = usePathname();
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files?.length) {
@@ -55,7 +50,7 @@ const VideoUpload: React.FC = () => {
       if (response.ok) {
         setStatus("success");
         setMessage(data.message || "Video analyzed successfully");
-        setAnalysisData(data);
+        // setAnalysisData(data);
         
         // Store the analysis data in localStorage for use on the analysis page
         localStorage.setItem('currentAnalysis', JSON.stringify(data));
@@ -70,7 +65,7 @@ const VideoUpload: React.FC = () => {
         setStatus("error");
         setMessage("Error: " + (data.detail || "Failed to analyze video"));
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       setStatus("error");
       console.error(err);
       setMessage("An error occurred while uploading video.");

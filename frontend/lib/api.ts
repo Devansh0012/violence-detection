@@ -71,12 +71,6 @@ if (typeof window !== 'undefined') {
 
 export default api;
 
-interface Sample {
-  id: number;
-  image: string;
-  confidence: number;
-}
-
 // Update the fetchAmbiguousSamples function
 
 export async function fetchAmbiguousSamples() {
