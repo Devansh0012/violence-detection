@@ -20,12 +20,34 @@ from typing import Optional
 from fastapi.staticfiles import StaticFiles 
 import os
 import base64
+import boto3
 #from flask_cors import CORS
 
 # Constants
 SECRET_KEY = "your-secret-key-here"  # Change this to a secure key
 ALGORITHM = "HS256"
 MONGO_URI = "mongodb+srv://devanshdubey0012:xkHHPuCdbmUYPcSm@violence.ktn5b.mongodb.net/?retryWrites=true&w=majority&appName=violence"  # Update with your MongoDB URI
+
+AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID")
+AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
+S3_BUCKET = os.environ.get("S3_BUCKET", "violence-detection-dev")
+
+# Create an S3 client
+s3 = boto3.client(
+    "s3",
+    aws_access_key_id=AWS_ACCESS_KEY_ID,
+    aws_secret_access_key=AWS_SECRET_ACCESS_KEY
+)
+
+def upload_file_to_s3(file_path: str, s3_key: str):
+    try:
+        s3.upload_file(file_path, S3_BUCKET, s3_key)
+        # Optionally, make the file public
+        file_url = f"https://{S3_BUCKET}.s3.amazonaws.com/{s3_key}"
+        return file_url
+    except Exception as exc:
+        print(f"S3 upload error: {exc}")
+        raise
 
 # Create necessary directories
 os.makedirs("detections", exist_ok=True)
@@ -192,34 +214,129 @@ async def login(user: UserBase):
         print(f"Login error: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@app.post("/analyze")
-async def analyze_video(file: UploadFile = File(...)):
+@app.post("/analyze_video")
+async def analyze_video_file(file: UploadFile = File(...)):
     try:
-        contents = await file.read()
-        nparr = np.frombuffer(contents, np.uint8)
-        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        temp_video_path = "temp_video.mp4"
+        with open(temp_video_path, "wb") as temp_file:
+            content = await file.read()
+            temp_file.write(content)
         
-        if frame is None:
-            raise HTTPException(status_code=400, detail="Invalid image file")
+        cap = cv2.VideoCapture(temp_video_path)
+        if not cap.isOpened():
+            raise HTTPException(status_code=400, detail="Cannot open video file")
         
-        score = predict_violence(frame)
-        if score is None:
-            raise HTTPException(status_code=500, detail="Prediction failed")
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         
-        is_violent = score > 0.3
-        timestamp = datetime.datetime.now().isoformat()
+        # Prepare video writer for annotated video
+        timestamp = datetime.datetime.now().isoformat().replace(":", "-")
+        local_annotated_path = f"annotated_videos/annotated_{timestamp}.mp4"
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        out = cv2.VideoWriter(local_annotated_path, fourcc, fps, (width, height))
         
-        if is_violent:
-            detection_path = f"detections/{timestamp}.jpg"
-            cv2.imwrite(detection_path, frame)
-            await detections_collection.insert_one({
-                "timestamp": timestamp,
-                "score": score,
-                "image_path": detection_path
-            })
+        frame_count = 0
+        violence_frames = 0
+        violent_segments = []
+        current_segment = None
+        sample_results = []
+        sample_interval = max(1, total_frames // 50)
         
-        return {"violence_detected": is_violent, "confidence_score": score, "timestamp": timestamp}
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            frame_count += 1
+            
+            if frame_count % 5 == 0 or frame_count == 1:
+                violence_score = predict_violence(frame)
+                is_violent = violence_score > 0.3
+                
+                if is_violent:
+                    violence_frames += 1
+                    if current_segment is None:
+                        current_segment = {
+                            "start_frame": frame_count,
+                            "start_time": frame_count / fps,
+                            "scores": [violence_score]
+                        }
+                    else:
+                        current_segment["scores"].append(violence_score)
+                else:
+                    if current_segment is not None:
+                        current_segment["end_frame"] = frame_count - 5
+                        current_segment["end_time"] = current_segment["end_frame"] / fps
+                        current_segment["duration"] = current_segment["end_time"] - current_segment["start_time"]
+                        current_segment["avg_score"] = sum(current_segment["scores"]) / len(current_segment["scores"])
+                        violent_segments.append(current_segment)
+                        current_segment = None
+                
+                annotated_frame = frame.copy()
+                status_text = f"Violence: {violence_score:.2f}" if is_violent else "No Violence"
+                cv2.putText(annotated_frame, status_text, (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1,
+                            (0, 0, 255) if is_violent else (0, 255, 0), 2)
+            else:
+                annotated_frame = frame
+            
+            out.write(annotated_frame)
+            
+            if frame_count % sample_interval == 0:
+                sample_results.append({
+                    "frame": frame_count,
+                    "time": frame_count / fps,
+                    "violence_detected": is_violent if 'is_violent' in locals() else False,
+                    "score": violence_score if 'violence_score' in locals() else 0.0
+                })
+        
+        if current_segment is not None:
+            current_segment["end_frame"] = frame_count
+            current_segment["end_time"] = frame_count / fps
+            current_segment["duration"] = current_segment["end_time"] - current_segment["start_time"]
+            current_segment["avg_score"] = sum(current_segment["scores"]) / len(current_segment["scores"])
+            violent_segments.append(current_segment)
+        
+        cap.release()
+        out.release()
+        if os.path.exists(temp_video_path):
+            os.remove(temp_video_path)
+        
+        violence_percentage = (violence_frames / (frame_count / 5) * 100) if frame_count > 0 else 0
+        if violence_percentage > 40:
+            classification = "violent"
+        elif violence_percentage > 10:
+            classification = "ambiguous"
+        else:
+            classification = "non-violent"
+        
+        # Upload the annotated video to S3
+        s3_key = f"annotated_videos/annotated_{timestamp}.mp4"
+        video_url = upload_file_to_s3(local_annotated_path, s3_key)
+        os.remove(local_annotated_path)
+        
+        analysis_document = {
+            "analysis_id": timestamp,
+            "video_url": video_url,
+            "summary": {
+                "total_frames": frame_count,
+                "violence_frames": violence_frames,
+                "violence_percentage": violence_percentage,
+                "classification": classification,
+                "duration_seconds": frame_count / fps
+            },
+            "violent_segments": violent_segments,
+            "sample_results": sample_results,
+            "created_at": datetime.datetime.utcnow()
+        }
+        await db["analyses"].insert_one(analysis_document)
+        
+        return JSONResponse(analysis_document)
+        
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.websocket("/ws")
