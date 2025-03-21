@@ -771,6 +771,8 @@ async def startup_event():
         # Test database connection
         info = await client.server_info()
         print("Successfully connected to MongoDB")
+
+        print(f"Server will bind to: 0.0.0.0:{os.environ.get('PORT', 8000)}")
         
         # Verify model is loaded
         test_tensor = torch.zeros((1, 3, 224, 224))
@@ -789,4 +791,8 @@ async def startup_event():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=int(os.environ.get("PORT", 8000))  # Use Render's PORT
+    )
