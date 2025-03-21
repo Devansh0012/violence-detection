@@ -659,6 +659,79 @@ async def get_video_analysis(analysis_id: str):
     except Exception as e:
         print(f"Error fetching analysis: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    
+@app.get("/ambiguous_samples")
+async def get_ambiguous_samples():
+    """Get images with ambiguous/uncertain violence classification"""
+    try:
+        # In a real app, you would query your database for images with confidence scores
+        # in a specific range (e.g., 0.4-0.6) that need human verification
+        
+        # For now, return some mock data
+        mock_samples = []
+        
+        # Fetch any entries from the detections collection with scores around 0.3-0.5
+        cursor = detections_collection.find(
+            {"score": {"$gte": 0.3, "$lte": 0.5}},
+            {"_id": 0, "timestamp": 1, "score": 1, "image_path": 1}
+        ).limit(5)
+        
+        samples = []
+        async for doc in cursor:
+            samples.append({
+                "id": doc["timestamp"],  # Using timestamp as ID
+                "image": f"/{doc['image_path']}",  # Path to the image
+                "confidence": doc["score"]  # Confidence score
+            })
+            
+        if not samples:
+            # If no real data, provide mock data
+            samples = [
+                {
+                    "id": 1,
+                    "image": "/detections/mock_sample1.jpg",
+                    "confidence": 0.45
+                },
+                {
+                    "id": 2,
+                    "image": "/detections/mock_sample2.jpg", 
+                    "confidence": 0.51
+                }
+            ]
+            
+        return samples
+    except Exception as e:
+        print(f"Error getting ambiguous samples: {str(e)}")
+        return []  # Return empty array on error
+
+@app.post("/label_sample")
+async def label_sample(data: dict):
+    """Label a sample as violent or non-violent for model retraining"""
+    try:
+        sample_id = data.get("id")
+        is_violent = data.get("is_violent")
+        
+        if sample_id is None or is_violent is None:
+            raise HTTPException(status_code=400, detail="Missing id or is_violent in request")
+            
+        # In a real app, you would update your database and potentially add this to a dataset
+        # for model retraining
+        
+        # For now, just log the action
+        print(f"Sample {sample_id} labeled as {'violent' if is_violent else 'non-violent'}")
+        
+        # You could add to a "labeled_samples" collection for future model retraining
+        await db["labeled_samples"].insert_one({
+            "sample_id": sample_id,
+            "is_violent": is_violent,
+            "labeled_at": datetime.datetime.now()
+        })
+        
+        return {"success": True, "message": "Sample labeled successfully"}
+    except Exception as e:
+        print(f"Error labeling sample: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/model_status")
 async def model_status():

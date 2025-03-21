@@ -77,35 +77,47 @@ interface Sample {
   confidence: number;
 }
 
-export async function fetchAmbiguousSamples(): Promise<Sample[]> {
+// Update the fetchAmbiguousSamples function
+
+export async function fetchAmbiguousSamples() {
   try {
-    const response = await fetch('/api/ambiguous-samples');
+    const response = await fetch('http://localhost:8000/ambiguous_samples');
+    
     if (!response.ok) {
-      throw new Error('Failed to fetch ambiguous samples');
+      throw new Error(`Server responded with ${response.status}`);
     }
-    return await response.json();
+    
+    const data = await response.json();
+    
+    // Ensure we always return an array, even if the API fails
+    if (!data || !Array.isArray(data)) {
+      console.error('API did not return an array:', data);
+      return [];
+    }
+    
+    return data;
   } catch (error) {
     console.error('Error fetching ambiguous samples:', error);
+    // Return empty array on error rather than undefined or null
     return [];
   }
 }
 
-export async function labelSample(id: number, isViolent: boolean): Promise<void> {
+export async function labelSample(id: number, isViolent: boolean) {
   try {
-    const response = await fetch('/api/label-sample', {
+    const response = await fetch('http://localhost:8000/label_sample', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        id,
-        isViolent,
-      }),
+      body: JSON.stringify({ id, is_violent: isViolent }),
     });
     
     if (!response.ok) {
-      throw new Error('Failed to label sample');
+      throw new Error(`Server responded with ${response.status}`);
     }
+    
+    return await response.json();
   } catch (error) {
     console.error('Error labeling sample:', error);
     throw error;
