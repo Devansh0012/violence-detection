@@ -14,11 +14,19 @@ interface ViolentSegment {
   scores: number[];
 }
 
+interface Keyframe {
+  url: string;
+  type: string;
+  frame: number;
+  time: number;
+  score: number;
+}
+
 interface AnalysisData {
   message: string;
   analysis_id: string;
   video_url: string;
-  keyframes: string[];
+  keyframes: Keyframe[];  // Updated type to match the new backend format
   summary: {
     total_frames: number;
     violence_frames: number;
@@ -27,7 +35,7 @@ interface AnalysisData {
     duration_seconds: number;
   };
   violent_segments: ViolentSegment[];
-  results: {
+  sample_results: {  // Updated from results to sample_results to match backend
     frame: number;
     time: number;
     violence_detected: boolean;
@@ -50,61 +58,30 @@ export default function AnalysisPage() {
   useEffect(() => {
     const fetchAnalysis = async () => {
       try {
-        // For now, we'll use the video URL parameter as our analysis data identifier
-        // In a real app, you'd make a backend call to retrieve the analysis data
-        if (!videoUrl) {
-          setError("No video URL provided");
+        if (!analysisId) {
+          setError("No analysis ID provided");
           setLoading(false);
           return;
         }
         const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+
         // Make request to retrieve the analysis data
-        const response = await fetch(`${apiUrl}/analyze_video/${analysisId}`).catch(() => {
-          // Fallback mock data if endpoint doesn't exist yet
-          return {
-            ok: true,
-            json: () => Promise.resolve({
-              message: "Video analyzed successfully",
-              analysis_id: analysisId,
-              video_url: videoUrl,
-              keyframes: ["/path/to/keyframe1.jpg", "/path/to/keyframe2.jpg"],
-              summary: {
-                total_frames: 300,
-                violence_frames: 120,
-                violence_percentage: 40,
-                classification: "violent",
-                duration_seconds: 10
-              },
-              violent_segments: [
-                {
-                  start_frame: 50,
-                  start_time: 1.67,
-                  end_frame: 150,
-                  end_time: 5.0,
-                  duration: 3.33,
-                  avg_score: 0.75,
-                  scores: [0.7, 0.8, 0.75]
-                }
-              ],
-              results: [
-                { frame: 1, time: 0.033, violence_detected: false, score: 0.2 },
-                { frame: 50, time: 1.67, violence_detected: true, score: 0.7 }
-              ]
-            })
-          };
-        });
+        const response = await fetch(`${apiUrl}/analyze_video/${analysisId}`);
 
         if (response.ok) {
           const data = await response.json();
+          console.log("Analysis data:", data); // Add this for debugging
           setAnalysisData(data);
+
+          // Set the first keyframe as selected if available
           if (data.keyframes && data.keyframes.length > 0) {
-            setSelectedKeyframe(data.keyframes[0]);
+            setSelectedKeyframe(data.keyframes[0].url);
           }
         } else {
           setError("Failed to load analysis data");
         }
       } catch (err) {
-        console.error(err);
+        console.error("Error fetching analysis:", err);
         setError("An error occurred while fetching the analysis data");
       } finally {
         setLoading(false);
@@ -112,7 +89,7 @@ export default function AnalysisPage() {
     };
 
     fetchAnalysis();
-  }, [analysisId, videoUrl]);
+  }, [analysisId]);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -191,14 +168,12 @@ export default function AnalysisPage() {
         </div>
 
         <div className="bg-gray-800 rounded-lg shadow-lg overflow-hidden mb-8">
-
           <video
-            src={`${process.env.NEXT_PUBLIC_API_URL}${analysisData.video_url}`}
+            src={analysisData.video_url}
             controls
             className="w-full"
-            poster={analysisData.keyframes.length > 0 ? `${process.env.NEXT_PUBLIC_API_URL}${analysisData.keyframes[0]}` : undefined}
+            poster={analysisData.keyframes.length > 0 ? analysisData.keyframes[0].url : undefined}
           />
-
         </div>
 
         <div className="mb-8">
@@ -331,35 +306,36 @@ export default function AnalysisPage() {
               <div>
                 <h2 className="text-xl font-semibold mb-4">Key Violent Frames</h2>
 
-                {analysisData.keyframes.length > 0 ? (
+                {analysisData.keyframes && analysisData.keyframes.length > 0 ? (
                   <div>
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 mb-6">
                       {analysisData.keyframes.map((frame, index) => (
                         <div
                           key={index}
-                          className={`relative cursor-pointer rounded overflow-hidden ${selectedKeyframe === frame ? 'ring-2 ring-blue-500' : ''
+                          className={`relative cursor-pointer rounded overflow-hidden ${selectedKeyframe === frame.url ? 'ring-2 ring-blue-500' : ''
                             }`}
-                          onClick={() => setSelectedKeyframe(frame)}
+                          onClick={() => setSelectedKeyframe(frame.url)}
                         >
-                          <Image
-                            src={`${process.env.NEXT_PUBLIC_API_URL}${frame}`}
-                            width={96}
-                            height={96}
-                            alt={`Violence detection frame ${index + 1}`}
+                          {/* Use regular img tag instead of Next.js Image */}
+                          <img
+                            src={frame.url}
+                            alt={`${frame.type} frame at ${formatTime(frame.time)}`}
                             className="w-full h-24 object-cover"
                           />
+                          <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-60 text-xs p-1 text-center">
+                            {frame.type.replace('_', ' ')}
+                          </div>
                         </div>
                       ))}
                     </div>
 
                     {selectedKeyframe && (
                       <div className="bg-gray-900 p-2 rounded-lg">
-                        <Image
-                          src={`${process.env.NEXT_PUBLIC_API_URL}${selectedKeyframe}`}
-                          width={640}
-                          height={480}
+                        {/* Use regular img tag for selected keyframe */}
+                        <img
+                          src={selectedKeyframe}
                           alt="Selected violence frame"
-                          className="w-full rounded"
+                          className="w-full max-h-[500px] object-contain mx-auto rounded"
                         />
                       </div>
                     )}
@@ -374,7 +350,7 @@ export default function AnalysisPage() {
               <div>
                 <h2 className="text-xl font-semibold mb-4">Violence Detection Timeline</h2>
 
-                {analysisData.results.length > 0 ? (
+                {analysisData.sample_results && analysisData.sample_results.length > 0 ? (
                   <div>
                     <div className="relative h-16 mb-6">
                       <div className="absolute top-0 left-0 right-0 h-4 bg-gray-700 rounded-full overflow-hidden">
@@ -385,7 +361,11 @@ export default function AnalysisPage() {
                           return (
                             <div
                               key={index}
-                              className={`absolute h-full bg-red-600 left-[${startPercent}%] w-[${widthPercent}%]`}
+                              className="absolute h-full bg-red-600"
+                              style={{
+                                left: `${startPercent}%`,
+                                width: `${widthPercent}%`
+                              }}
                               title={`Violence at ${formatTime(segment.start_time)} - ${formatTime(segment.end_time)}`}
                             ></div>
                           );
@@ -395,23 +375,13 @@ export default function AnalysisPage() {
                       <div className="absolute top-6 left-0 right-0 h-8">
                         {[0, 0.25, 0.5, 0.75, 1].map((point) => {
                           const time = point * analysisData.summary.duration_seconds;
-                          let leftClass = '';
-                          if (point === 0) {
-                            leftClass = 'left-0';
-                          } else if (point === 0.25) {
-                            leftClass = 'left-[25%]';
-                          } else if (point === 0.5) {
-                            leftClass = 'left-[50%]';
-                          } else if (point === 0.75) {
-                            leftClass = 'left-[75%]';
-                          } else if (point === 1) {
-                            leftClass = 'left-[100%]';
-                          }
+                          const leftPos = `${point * 100}%`;
 
                           return (
                             <div
                               key={point}
-                              className={`absolute transform -translate-x-1/2 ${leftClass}`}
+                              className="absolute transform -translate-x-1/2"
+                              style={{ left: leftPos }}
                             >
                               <div className="h-2 w-0.5 bg-gray-600 mx-auto"></div>
                               <div className="text-xs text-gray-400 mt-1">{formatTime(time)}</div>
@@ -432,7 +402,7 @@ export default function AnalysisPage() {
                           </tr>
                         </thead>
                         <tbody>
-                          {analysisData.results.map((result, index) => (
+                          {analysisData.sample_results.map((result, index) => (
                             <tr key={index} className="border-b border-gray-800">
                               <td className="py-3 px-4">{result.frame}</td>
                               <td className="py-3 px-4">{formatTime(result.time)}</td>
