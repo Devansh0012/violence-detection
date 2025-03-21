@@ -72,10 +72,10 @@ if (typeof window !== 'undefined') {
 export default api;
 
 // Update the fetchAmbiguousSamples function
-
 export async function fetchAmbiguousSamples() {
   try {
-    const response = await fetch('http://localhost:8000/ambiguous_samples');
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+    const response = await fetch(`${apiUrl}/ambiguous_samples`);
     
     if (!response.ok) {
       throw new Error(`Server responded with ${response.status}`);
@@ -83,7 +83,6 @@ export async function fetchAmbiguousSamples() {
     
     const data = await response.json();
     
-    // Ensure we always return an array, even if the API fails
     if (!data || !Array.isArray(data)) {
       console.error('API did not return an array:', data);
       return [];
@@ -92,14 +91,14 @@ export async function fetchAmbiguousSamples() {
     return data;
   } catch (error) {
     console.error('Error fetching ambiguous samples:', error);
-    // Return empty array on error rather than undefined or null
     return [];
   }
 }
 
 export async function labelSample(id: number, isViolent: boolean) {
   try {
-    const response = await fetch('http://localhost:8000/label_sample', {
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+    const response = await fetch(`${apiUrl}/label_sample`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
