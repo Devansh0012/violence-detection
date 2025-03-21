@@ -37,7 +37,8 @@ const VideoUpload: React.FC = () => {
         });
       }, 1000);
 
-      const response = await fetch("http://localhost:8000/analyze_video", {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+      const response = await fetch(`${apiUrl}/analyze_video`, {
         method: "POST",
         body: formData,
       });

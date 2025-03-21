@@ -57,9 +57,9 @@ export default function AnalysisPage() {
           setLoading(false);
           return;
         }
-
+        const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
         // Make request to retrieve the analysis data
-        const response = await fetch(`http://localhost:8000/analyze_video/${analysisId}`).catch(() => {
+        const response = await fetch(`${apiUrl}/analyze_video/${analysisId}`).catch(() => {
           // Fallback mock data if endpoint doesn't exist yet
           return {
             ok: true,
@@ -191,12 +191,14 @@ export default function AnalysisPage() {
         </div>
 
         <div className="bg-gray-800 rounded-lg shadow-lg overflow-hidden mb-8">
+
           <video
-            src={`http://localhost:8000${analysisData.video_url}`}
+            src={`${process.env.NEXT_PUBLIC_API_URL}${analysisData.video_url}`}
             controls
             className="w-full"
-            poster={analysisData.keyframes.length > 0 ? `http://localhost:8000${analysisData.keyframes[0]}` : undefined}
+            poster={analysisData.keyframes.length > 0 ? `${process.env.NEXT_PUBLIC_API_URL}${analysisData.keyframes[0]}` : undefined}
           />
+
         </div>
 
         <div className="mb-8">
@@ -263,8 +265,8 @@ export default function AnalysisPage() {
                       <div className="w-full bg-gray-700 rounded-full h-2">
                         <div
                           className={`h-full rounded-full ${analysisData.summary.violence_percentage > 40 ? 'bg-red-600' :
-                              analysisData.summary.violence_percentage > 10 ? 'bg-yellow-600' :
-                                'bg-green-600'
+                            analysisData.summary.violence_percentage > 10 ? 'bg-yellow-600' :
+                              'bg-green-600'
                             } w-[${Math.min(100, analysisData.summary.violence_percentage)}%]`}
                         ></div>
                       </div>
@@ -307,8 +309,8 @@ export default function AnalysisPage() {
                               <td className="py-3 px-4">{segment.duration.toFixed(1)}s</td>
                               <td className="py-3 px-4">
                                 <span className={`font-medium ${segment.avg_score > 0.7 ? 'text-red-500' :
-                                    segment.avg_score > 0.5 ? 'text-yellow-500' :
-                                      'text-blue-500'
+                                  segment.avg_score > 0.5 ? 'text-yellow-500' :
+                                    'text-blue-500'
                                   }`}>
                                   {(segment.avg_score * 100).toFixed(1)}%
                                 </span>
@@ -340,7 +342,7 @@ export default function AnalysisPage() {
                           onClick={() => setSelectedKeyframe(frame)}
                         >
                           <Image
-                            src={`http://localhost:8000${frame}`}
+                            src={`${process.env.NEXT_PUBLIC_API_URL}${frame}`}
                             width={96}
                             height={96}
                             alt={`Violence detection frame ${index + 1}`}
@@ -353,7 +355,7 @@ export default function AnalysisPage() {
                     {selectedKeyframe && (
                       <div className="bg-gray-900 p-2 rounded-lg">
                         <Image
-                          src={`http://localhost:8000${selectedKeyframe}`}
+                          src={`${process.env.NEXT_PUBLIC_API_URL}${selectedKeyframe}`}
                           width={640}
                           height={480}
                           alt="Selected violence frame"
@@ -447,9 +449,9 @@ export default function AnalysisPage() {
                               </td>
                               <td className="py-3 px-4">
                                 <span className={`font-medium ${result.score > 0.7 ? 'text-red-500' :
-                                    result.score > 0.5 ? 'text-yellow-500' :
-                                      result.score > 0.3 ? 'text-orange-500' :
-                                        'text-green-500'
+                                  result.score > 0.5 ? 'text-yellow-500' :
+                                    result.score > 0.3 ? 'text-orange-500' :
+                                      'text-green-500'
                                   }`}>
                                   {(result.score * 100).toFixed(1)}%
                                 </span>
