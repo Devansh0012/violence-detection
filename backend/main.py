@@ -43,12 +43,40 @@ s3 = boto3.client(
     aws_secret_access_key=AWS_SECRET_ACCESS_KEY
 )
 
+def generate_presigned_url(file_name):
+
+    s3_client = boto3.client(
+        "s3",
+        aws_access_key_id=AWS_ACCESS_KEY_ID,
+        aws_secret_access_key = AWS_SECRET_ACCESS_KEY,
+        region_name=S3_REGION,
+    )
+
+    try:
+        presigned_url = s3_client.generate_presigned_url(
+            "get_object",
+            Params={
+                "Bucket": S3_BUCKET,
+                "Key": file_name,
+                # "ContentType": "image/jpeg",
+                # "ACL": "public-read",
+            },
+            ExpiresIn=3600,  # URL expires in 1 hour
+        )
+        print(f"Generated path is {file_name}")
+        print(f"Generated presigned URL: {presigned_url}")
+        return presigned_url
+
+    except Exception as e:
+        print(f"Error generating presigned URL: {e}")
+        return None
+    
 def upload_file_to_s3(file_path: str, s3_key: str):
     try:
         print(f"Uploading {file_path} to S3 bucket {S3_BUCKET} with key {s3_key}")
         s3.upload_file(file_path, S3_BUCKET, s3_key)
         # Generate the correct URL format for the region
-        file_url = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{s3_key}"
+        file_url = generate_presigned_url(file_path)
         print(f"Upload successful: {file_url}")
         return file_url
     except Exception as exc:
