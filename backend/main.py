@@ -31,6 +31,7 @@ SECRET_KEY = "your-secret-key-here"  # Change this to a secure key
 ALGORITHM = "HS256"
 MONGO_URI = "mongodb+srv://devanshdubey0012:xkHHPuCdbmUYPcSm@violence.ktn5b.mongodb.net/?retryWrites=true&w=majority&appName=violence"  # Update with your MongoDB URI
 
+#add aws credentials
 AWS_ACCESS_KEY_ID = ""
 AWS_SECRET_ACCESS_KEY = ""
 S3_BUCKET = ""
@@ -518,78 +519,90 @@ async def websocket_endpoint(websocket: WebSocket):
         print("Entering WebSocket processing loop")
         while True:
             try:
-                # Handle incoming messages - configuration or frames
-                message = await websocket.receive()
-                print(f"Received message type: {message.get('type')}")
-                
-                # Check if client disconnected
-                if message.get("type") == "websocket.disconnect":
-                    print("Client sent disconnect message")
-                    break
-                
-                # Handle binary data (frames from browser webcam)
-                if "bytes" in message:
-                    # Only process webcam frames if we're not using RTSP
-                    if not use_rtsp:
-                        data = message["bytes"]
-                        nparr = np.frombuffer(data, np.uint8)
-                        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                        
-                        if frame is None:
-                            print("ERROR: Received invalid image data")
-                            await websocket.send_json({"error": "Invalid image data received"})
+                # Check for new messages without blocking
+                try:
+                    # Use a timeout to avoid blocking indefinitely
+                    message = await asyncio.wait_for(websocket.receive(), timeout=0.01)
+                    print(f"Received message type: {message.get('type')}")
+                    
+                    # Check if client disconnected
+                    if message.get("type") == "websocket.disconnect":
+                        print("Client sent disconnect message")
+                        break
+                    
+                    # Handle binary data (frames from browser webcam)
+                    if "bytes" in message:
+                        # Only process webcam frames if we're not using RTSP
+                        if not use_rtsp:
+                            data = message["bytes"]
+                            nparr = np.frombuffer(data, np.uint8)
+                            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                            
+                            if frame is None:
+                                print("ERROR: Received invalid image data")
+                                await websocket.send_json({"error": "Invalid image data received"})
+                                continue
+                        else:
+                            # If using RTSP, ignore frames from browser
                             continue
-                    else:
-                        # If using RTSP, ignore frames from browser
-                        continue
-                
-                # Handle text data (configuration)
-                elif "text" in message:
-                    try:
-                        json_data = json.loads(message["text"])
-                        print(f"Received configuration: {json_data}")
-                        
-                        # Configure RTSP
-                        if "rtsp_url" in json_data and json_data["rtsp_url"]:
-                            rtsp_url = json_data["rtsp_url"]
+                    
+                    # Handle text data (configuration)
+                    elif "text" in message:
+                        try:
+                            json_data = json.loads(message["text"])
+                            print(f"Received configuration: {json_data}")
                             
-                            # Close previous capture if any
-                            if cap and cap.isOpened():
-                                cap.release()
-                                cap = None
-                            
-                            print(f"Attempting to connect to RTSP: {rtsp_url}")
-                            use_rtsp = True
-                            cap = open_rtsp_stream_with_fallbacks(rtsp_url)
-                            
-                            if cap is None or not cap.isOpened():
-                                print("Failed to open RTSP stream")
-                                await websocket.send_json({"error": f"Failed to open RTSP stream: {rtsp_url}"})
-                                use_rtsp = False
-                            else:
-                                print(f"Successfully opened RTSP stream: {rtsp_url}")
-                                await websocket.send_json({"message": f"RTSP stream opened successfully"})
-                        
-                        # Handle stopping RTSP
-                        if "use_rtsp" in json_data and not json_data["use_rtsp"]:
-                            use_rtsp = False
-                            if cap and cap.isOpened():
-                                cap.release()
-                                cap = None
-                            await websocket.send_json({"message": "Switched to webcam mode"})
+                            # Configure RTSP
+                            if "rtsp_url" in json_data and json_data["rtsp_url"]:
+                                rtsp_url = json_data["rtsp_url"]
                                 
-                    except json.JSONDecodeError as e:
-                        print(f"JSON decode error: {e}")
-                        await websocket.send_json({"error": f"Invalid JSON: {str(e)}"})
-                        continue
+                                # Close previous capture if any
+                                if cap and cap.isOpened():
+                                    cap.release()
+                                    cap = None
+                                
+                                print(f"Attempting to connect to RTSP: {rtsp_url}")
+                                use_rtsp = True
+                                cap = open_rtsp_stream_with_fallbacks(rtsp_url)
+                                
+                                if cap is None or not cap.isOpened():
+                                    print("Failed to open RTSP stream")
+                                    await websocket.send_json({"error": f"Failed to open RTSP stream: {rtsp_url}"})
+                                    use_rtsp = False
+                                else:
+                                    print(f"Successfully opened RTSP stream: {rtsp_url}")
+                                    await websocket.send_json({"message": f"RTSP stream opened successfully"})
+                            
+                            # Handle stopping RTSP
+                            if "use_rtsp" in json_data and not json_data["use_rtsp"]:
+                                use_rtsp = False
+                                if cap and cap.isOpened():
+                                    cap.release()
+                                    cap = None
+                                await websocket.send_json({"message": "Switched to webcam mode"})
+                                    
+                        except json.JSONDecodeError as e:
+                            print(f"JSON decode error: {e}")
+                            await websocket.send_json({"error": f"Invalid JSON: {str(e)}"})
+                            continue
                 
+                except asyncio.TimeoutError:
+                    # No new messages, continue with frame processing
+                    pass
+                except Exception as e:
+                    print(f"Error receiving message: {str(e)}")
+                    # Don't break the loop for message errors
+                    
                 # Process RTSP frames if available
                 if use_rtsp and cap and cap.isOpened():
                     ret, frame = cap.read()
-                    if not ret:
+                    if not ret or frame is None:
                         print("Failed to read frame from RTSP stream")
                         # Try to reconnect to RTSP stream
-                        cap.release()
+                        if cap:
+                            cap.release()
+                        # Don't try to reconnect immediately, add a small delay
+                        await asyncio.sleep(0.5)
                         cap = open_rtsp_stream_with_fallbacks(rtsp_url)
                         if cap is None or not cap.isOpened():
                             await websocket.send_json({"error": "Failed to reconnect to RTSP stream"})
@@ -602,6 +615,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     # No frame to process
                     if use_rtsp:
                         # For RTSP we continue trying to get frames
+                        await asyncio.sleep(0.01)
                         continue
                     else:
                         # For webcam we just wait for more data
@@ -637,18 +651,26 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Convert frame to JPEG and send it
                 _, buffer = cv2.imencode('.jpg', annotated_frame)
                 jpg_bytes = buffer.tobytes()
-                await websocket.send_bytes(jpg_bytes)
                 
-                # Send analysis data as JSON
-                await websocket.send_json({
-                    "is_violent": is_violent,
-                    "violence_score": violence_score,
-                    "timestamp": datetime.datetime.now().isoformat()
-                })
+                # Use try-except for sending to handle disconnection gracefully
+                try:
+                    await websocket.send_bytes(jpg_bytes)
+                    
+                    # Send analysis data as JSON
+                    await websocket.send_json({
+                        "is_violent": is_violent,
+                        "violence_score": violence_score,
+                        "timestamp": datetime.datetime.now().isoformat()
+                    })
+                except Exception as e:
+                    print(f"Error sending frame: {str(e)}")
+                    # Client probably disconnected
+                    break
                 
                 # Add a small delay to control frame rate
                 if use_rtsp:
-                    await asyncio.sleep(0.03)  # ~30fps for RTSP
+                    # Changed to shorter sleep time to make stream more responsive
+                    await asyncio.sleep(0.02)  # ~50fps max for RTSP
                 
             except WebSocketDisconnect:
                 print("WebSocket disconnected")
@@ -674,7 +696,6 @@ async def websocket_endpoint(websocket: WebSocket):
             cap.release()
         print("WebSocket connection closed")
 
-# Add this function to your main.py file
 def open_rtsp_stream_with_fallbacks(rtsp_url):
     """Try multiple methods to open RTSP stream and return the first working one"""
     print(f"Attempting to open RTSP stream: {rtsp_url}")
@@ -683,55 +704,61 @@ def open_rtsp_stream_with_fallbacks(rtsp_url):
     print("Trying standard OpenCV connection...")
     cap = cv2.VideoCapture(rtsp_url)
     if cap.isOpened():
+        # Try reading a test frame to verify connection
         ret, test_frame = cap.read()
-        if ret and test_frame is not None:
+        if ret and test_frame is not None and test_frame.size > 0:
             print("Standard OpenCV connection successful")
+            # Set buffer size to minimize latency
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             return cap
         cap.release()
     
-    # Method 2: FFMPEG with TCP
+    # Method 2: FFMPEG with TCP transport
     print("Trying FFMPEG with TCP transport...")
     os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
     cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
     if cap.isOpened():
         ret, test_frame = cap.read()
-        if ret and test_frame is not None:
+        if ret and test_frame is not None and test_frame.size > 0:
             print("FFMPEG with TCP transport successful")
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             return cap
         cap.release()
     
-    # Method 3: FFMPEG with UDP
+    # Method 3: FFMPEG with UDP transport
     print("Trying FFMPEG with UDP transport...")
     os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;udp"
     cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
     if cap.isOpened():
         ret, test_frame = cap.read()
-        if ret and test_frame is not None:
+        if ret and test_frame is not None and test_frame.size > 0:
             print("FFMPEG with UDP transport successful")
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             return cap
         cap.release()
     
-    # Method 4: FFMPEG with additional options
+    # Method 4: FFMPEG with additional options for high-latency networks
     print("Trying FFMPEG with additional options...")
     os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|buffer_size;1024000|stimeout;5000000|max_delay;500000"
     cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
     if cap.isOpened():
         ret, test_frame = cap.read()
-        if ret and test_frame is not None:
+        if ret and test_frame is not None and test_frame.size > 0:
             print("FFMPEG with additional options successful")
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             return cap
         cap.release()
     
-    # Method 5: GStreamer pipeline if available
+    # Method 5: Try with GStreamer if available
     if 'GStreamer' in cv2.getBuildInformation():
         print("Trying GStreamer pipeline...")
         gst_str = (f'rtspsrc location={rtsp_url} latency=0 ! '
                   'rtph264depay ! h264parse ! avdec_h264 ! '
-                  'videoconvert ! appsink')
+                  'videoconvert ! appsink sync=false')
         cap = cv2.VideoCapture(gst_str, cv2.CAP_GSTREAMER)
         if cap.isOpened():
             ret, test_frame = cap.read()
-            if ret and test_frame is not None:
+            if ret and test_frame is not None and test_frame.size > 0:
                 print("GStreamer pipeline successful")
                 return cap
             cap.release()

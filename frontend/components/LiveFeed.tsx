@@ -23,17 +23,40 @@ const LiveFeed: React.FC<LiveFeedProps> = ({ onAlert }) => {
     const [error, setError] = useState<string | null>(null);
     const [annotatedFrame, setAnnotatedFrame] = useState<string | null>(null);
     const [connectionAttempts, setConnectionAttempts] = useState(0);
+    const [lastFrameTime, setLastFrameTime] = useState<number | null>(null);
+    
     // Default to your RTSP URL
     const [rtspUrl, setRtspUrl] = useState<string>('rtsp://test123:test123@192.168.1.23:554/stream1');
-    // Default to using RTSP since that's what you want to use
     const [useRtsp, setUseRtsp] = useState(true);
     const [useSystemCamera, setUseSystemCamera] = useState(false);
     const [connectionStatus, setConnectionStatus] = useState<string | null>(null);
+    const [lastActivity, setLastActivity] = useState<number>(Date.now());
+    const [streamStats, setStreamStats] = useState<{fps: number}>({fps: 0});
 
     const processMessage = useCallback((event: MessageEvent) => {
         try {
+            // Reset activity tracker
+            setLastActivity(Date.now());
+            
             // Handle binary data (video frames)
             if (event.data instanceof Blob) {
+                // Add size check to filter out empty frames
+                if (event.data.size < 100) {
+                    console.warn("Received very small frame, possibly invalid");
+                    return;
+                }
+                
+                const now = Date.now();
+                if (lastFrameTime) {
+                    // Calculate and update FPS (smooth over multiple frames)
+                    const frameDelay = now - lastFrameTime;
+                    const instantFps = 1000 / frameDelay;
+                    setStreamStats(prev => ({
+                        fps: Math.round((prev.fps * 0.8 + instantFps * 0.2) * 10) / 10
+                    }));
+                }
+                setLastFrameTime(now);
+                
                 // Revoke the old URL to prevent memory leaks
                 if (annotatedFrame && annotatedFrame.startsWith('blob:')) {
                     URL.revokeObjectURL(annotatedFrame);
@@ -78,7 +101,31 @@ const LiveFeed: React.FC<LiveFeedProps> = ({ onAlert }) => {
         } catch (err) {
             console.error('Error processing WebSocket message:', err);
         }
-    }, [annotatedFrame, onAlert]);
+    }, [annotatedFrame, lastFrameTime, onAlert]);
+
+    // Health check to detect stalled streams
+    useEffect(() => {
+        if (!isAnalyzing) return;
+        
+        const interval = setInterval(() => {
+            const now = Date.now();
+            if (now - lastActivity > 5000) { // No activity for 5 seconds
+                console.warn("No WebSocket activity for 5 seconds");
+                setConnectionStatus("Stream may be stalled. Trying to reconnect...");
+                
+                // Try to reconnect
+                if (wsRef.current?.readyState === WebSocket.OPEN) {
+                    // Re-send configuration
+                    sendConfiguration();
+                } else {
+                    // If socket is closed, reconnect
+                    connectWebSocket();
+                }
+            }
+        }, 2000);
+        
+        return () => clearInterval(interval);
+    }, [isAnalyzing, lastActivity]);
 
     const connectWebSocket = useCallback(() => {
         if (connectionAttempts > 5) {
@@ -102,6 +149,7 @@ const LiveFeed: React.FC<LiveFeedProps> = ({ onAlert }) => {
                 setIsConnected(true);
                 setError(null);
                 setConnectionAttempts(0);
+                setLastActivity(Date.now());
                 
                 // Add a small delay before sending the initial configuration
                 setTimeout(() => {
@@ -114,7 +162,7 @@ const LiveFeed: React.FC<LiveFeedProps> = ({ onAlert }) => {
                     } else {
                         console.log("WebSocket is not open, cannot send initial configuration");
                     }
-                }, 500); 
+                }, 300);
             };
     
             ws.onclose = (event) => {
@@ -126,7 +174,7 @@ const LiveFeed: React.FC<LiveFeedProps> = ({ onAlert }) => {
                     console.log("Attempting to reconnect...");
                     setTimeout(() => {
                         connectWebSocket();
-                    }, 2000);  // Reconnect after 2 seconds
+                    }, 1000);  // Reconnect after 2 seconds
                 }
             };
     
@@ -149,6 +197,8 @@ const LiveFeed: React.FC<LiveFeedProps> = ({ onAlert }) => {
             console.error("WebSocket is not open, cannot send configuration");
             return;
         }
+        
+        setLastActivity(Date.now());
         
         if (useRtsp && rtspUrl) {
             console.log("Sending RTSP URL:", rtspUrl);
@@ -178,6 +228,7 @@ const LiveFeed: React.FC<LiveFeedProps> = ({ onAlert }) => {
                 
                 const blob = new Blob([byteArray], { type: 'image/jpeg' });
                 wsRef.current.send(blob);
+                setLastActivity(Date.now());
             } catch (err) {
                 console.error('Error sending frame:', err);
             }
@@ -187,6 +238,8 @@ const LiveFeed: React.FC<LiveFeedProps> = ({ onAlert }) => {
     const startAnalysis = () => {
         setError(null);
         setIsAnalyzing(true);
+        setStreamStats({fps: 0});
+        setLastActivity(Date.now());
         
         if (!isConnected) {
             // Connect first, configuration will be sent in the onopen handler
@@ -264,6 +317,10 @@ const LiveFeed: React.FC<LiveFeedProps> = ({ onAlert }) => {
         };
     }, [isAnalyzing, isConnected, useRtsp, useSystemCamera, captureFrame]);
 
+    // Generate a key that changes each time we start analysis
+    // This forces the Webcam component to rerender
+    const webcamKey = useRtsp ? `rtsp-${rtspUrl}` : `webcam-${Date.now()}`;
+    
     return (
         <div className="bg-gray-800 p-6 rounded-xl shadow-lg">
             <h2 className="text-xl font-semibold mb-4">Live Violence Detection</h2>
@@ -331,24 +388,45 @@ const LiveFeed: React.FC<LiveFeedProps> = ({ onAlert }) => {
             
             <div className="relative">
                 <div className="rounded-lg overflow-hidden">
-                    {annotatedFrame && isAnalyzing ? (
+                    {isAnalyzing ? (
                         <div className="relative">
-                            <Image 
-                                src={annotatedFrame} 
-                                width={640}
-                                height={480}
-                                className="w-full rounded-lg"
-                                alt="Processed frame with annotations"
-                            />
+                            {annotatedFrame ? (
+                                <Image 
+                                    src={annotatedFrame} 
+                                    width={640}
+                                    height={480}
+                                    className="w-full rounded-lg"
+                                    alt="Processed frame with annotations"
+                                    priority={true}
+                                    unoptimized={true} // Important for real-time video
+                                />
+                            ) : (
+                                <div className="bg-gray-700 w-full h-80 flex items-center justify-center rounded-lg">
+                                    <p>Waiting for video stream...</p>
+                                </div>
+                            )}
+                            
+                            {/* Stream stats overlay */}
+                            <div className="absolute bottom-2 left-2 bg-black/50 text-white px-2 py-1 rounded text-xs">
+                                {streamStats.fps > 0 && `${streamStats.fps} FPS`}
+                            </div>
+                            
                             {connectionStatus && (
                                 <div className="absolute top-2 left-2 bg-blue-600/70 text-white px-2 py-1 rounded text-sm">
                                     {connectionStatus}
+                                </div>
+                            )}
+                            
+                            {violence && violence.violence && (
+                                <div className="absolute top-2 right-2 bg-red-600 text-white px-3 py-1 rounded-lg text-sm font-bold">
+                                    Violence Detected: {(violence.score * 100).toFixed(1)}%
                                 </div>
                             )}
                         </div>
                     ) : (
                         !useRtsp && !useSystemCamera ? (
                             <Webcam
+                                key={webcamKey}
                                 ref={webcamRef}
                                 screenshotFormat="image/jpeg"
                                 className="w-full rounded-lg"
@@ -363,12 +441,6 @@ const LiveFeed: React.FC<LiveFeedProps> = ({ onAlert }) => {
                                 <p>{useRtsp ? "RTSP stream" : "System camera"} will appear here when analysis starts</p>
                             </div>
                         )
-                    )}
-                    
-                    {violence && violence.violence && (
-                        <div className="absolute top-4 right-4 bg-red-600 text-white px-3 py-1 rounded-lg text-sm font-bold">
-                            Violence Detected: {(violence.score * 100).toFixed(1)}%
-                        </div>
                     )}
                 </div>
                 
@@ -412,15 +484,28 @@ const LiveFeed: React.FC<LiveFeedProps> = ({ onAlert }) => {
                 </div>
             )}
             
-            {isConnected ? (
-                <div className="mt-4 p-2 bg-green-500/20 border border-green-500/50 text-green-400 rounded text-xs text-center">
-                    Connected to server
+            <div className="mt-4 grid grid-cols-2 gap-2">
+                <div className={`p-2 rounded text-xs text-center ${
+                    isConnected 
+                        ? 'bg-green-500/20 border border-green-500/50 text-green-400' 
+                        : isAnalyzing 
+                            ? 'bg-yellow-500/20 border border-yellow-500/50 text-yellow-400'
+                            : 'bg-gray-700 text-gray-300'
+                }`}>
+                    {isConnected ? "Connected to server" : isAnalyzing ? "Connecting to server..." : "Server connection"}
                 </div>
-            ) : isAnalyzing ? (
-                <div className="mt-4 p-2 bg-yellow-500/20 border border-yellow-500/50 text-yellow-400 rounded text-xs text-center">
-                    Connecting to server...
+                
+                <div className={`p-2 rounded text-xs text-center ${
+                    isAnalyzing ? (annotatedFrame 
+                        ? 'bg-green-500/20 border border-green-500/50 text-green-400'
+                        : 'bg-yellow-500/20 border border-yellow-500/50 text-yellow-400') 
+                    : 'bg-gray-700 text-gray-300'
+                }`}>
+                    {isAnalyzing 
+                        ? (annotatedFrame ? "Stream active" : "Waiting for stream...") 
+                        : "Stream inactive"}
                 </div>
-            ) : null}
+            </div>
         </div>
     );
 };
