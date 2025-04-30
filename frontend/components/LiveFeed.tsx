@@ -23,14 +23,30 @@ const LiveFeed: React.FC<LiveFeedProps> = ({ onAlert }) => {
     const [error, setError] = useState<string | null>(null);
     const [annotatedFrame, setAnnotatedFrame] = useState<string | null>(null);
     const [connectionAttempts, setConnectionAttempts] = useState(0);
-    const [rtspUrl, setRtspUrl] = useState<string>('');
-    const [useRtsp, setUseRtsp] = useState(false);
+    // Default to your RTSP URL
+    const [rtspUrl, setRtspUrl] = useState<string>('rtsp://test123:test123@192.168.1.23:554/stream1');
+    // Default to using RTSP since that's what you want to use
+    const [useRtsp, setUseRtsp] = useState(true);
     const [useSystemCamera, setUseSystemCamera] = useState(false);
+    const [connectionStatus, setConnectionStatus] = useState<string | null>(null);
 
     const processMessage = useCallback((event: MessageEvent) => {
         try {
+            // Handle binary data (video frames)
+            if (event.data instanceof Blob) {
+                // Revoke the old URL to prevent memory leaks
+                if (annotatedFrame && annotatedFrame.startsWith('blob:')) {
+                    URL.revokeObjectURL(annotatedFrame);
+                }
+                
+                const url = URL.createObjectURL(event.data);
+                setAnnotatedFrame(url);
+                return;
+            }
+            
+            // Handle JSON data
             const data = JSON.parse(event.data);
-            console.log("Received data:", data);
+            console.log("Received WebSocket data:", data);
             
             // Check for error messages
             if (data.error) {
@@ -40,68 +56,111 @@ const LiveFeed: React.FC<LiveFeedProps> = ({ onAlert }) => {
             
             if (data.message) {
                 console.log("Server message:", data.message);
+                setConnectionStatus(data.message);
+                // Clear the status message after 5 seconds
+                setTimeout(() => setConnectionStatus(null), 5000);
             }
             
-            if (data.annotated_frame) {
-                setAnnotatedFrame(`data:image/jpeg;base64,${data.annotated_frame}`);
-            }
-            
-            if (data.violence !== undefined) {
+            // Process violence detection results
+            if (data.violence_score !== undefined) {
+                const isViolent = data.is_violent;
                 setViolence({
-                    violence: data.violence,
-                    score: data.score,
+                    violence: isViolent,
+                    score: data.violence_score,
                     timestamp: data.timestamp,
-                    annotated_frame: data.annotated_frame
+                    annotated_frame: ""  // We get the frame separately as binary data
                 });
                 
-                if (data.violence) {
-                    onAlert(`Violence detected at ${new Date(data.timestamp).toLocaleTimeString()} with ${(data.score * 100).toFixed(1)}% confidence`);
+                if (isViolent) {
+                    onAlert(`Violence detected at ${new Date(data.timestamp).toLocaleTimeString()} with ${(data.violence_score * 100).toFixed(1)}% confidence`);
                 }
             }
         } catch (err) {
-            console.error('Error parsing WebSocket message:', err);
+            console.error('Error processing WebSocket message:', err);
         }
-    }, [onAlert]);
+    }, [annotatedFrame, onAlert]);
 
     const connectWebSocket = useCallback(() => {
-        if (connectionAttempts > 3) {
+        if (connectionAttempts > 5) {
             setError("Failed to connect after multiple attempts. Please check your server connection.");
             return;
         }
-
+    
         try {
+            // Close existing connection if any
+            if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
+                console.log("Closing existing WebSocket connection");
+                wsRef.current.close();
+            }
+            
+            console.log("Attempting to connect to WebSocket...");
             const wsUrl = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000';
             const ws = new WebSocket(`${wsUrl}/ws`);
             
             ws.onopen = () => {
+                console.log('WebSocket connected successfully');
                 setIsConnected(true);
                 setError(null);
                 setConnectionAttempts(0);
-                console.log('WebSocket connected');
+                
+                // Add a small delay before sending the initial configuration
+                setTimeout(() => {
+                    if (ws.readyState === WebSocket.OPEN) {
+                        console.log("Sending initial configuration...");
+                        // If we're analyzing, send the configuration immediately
+                        if (isAnalyzing) {
+                            sendConfiguration(ws);
+                        }
+                    } else {
+                        console.log("WebSocket is not open, cannot send initial configuration");
+                    }
+                }, 500); 
             };
-
-            ws.onclose = () => {
+    
+            ws.onclose = (event) => {
                 setIsConnected(false);
-                setIsAnalyzing(false);
-                console.log('WebSocket disconnected');
+                console.log(`WebSocket disconnected: ${event.code} ${event.reason}`);
+                
+                // Auto-reconnect if we're supposed to be analyzing
+                if (isAnalyzing) {
+                    console.log("Attempting to reconnect...");
+                    setTimeout(() => {
+                        connectWebSocket();
+                    }, 2000);  // Reconnect after 2 seconds
+                }
             };
-
+    
             ws.onerror = (error) => {
                 console.error('WebSocket error:', error);
-                setError('WebSocket connection failed. The server might be offline.');
-                setIsConnected(false);
-                setIsAnalyzing(false);
+                setError('WebSocket connection failed. The server might be offline or unreachable.');
                 setConnectionAttempts(prev => prev + 1);
             };
-
+    
             ws.onmessage = processMessage;
-
             wsRef.current = ws;
         } catch (error) {
             console.error("Failed to create WebSocket:", error);
             setError("Failed to create WebSocket connection");
         }
-    }, [processMessage, connectionAttempts]);
+    }, [connectionAttempts, isAnalyzing, processMessage]);
+    
+    const sendConfiguration = (ws: WebSocket | null = wsRef.current) => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+            console.error("WebSocket is not open, cannot send configuration");
+            return;
+        }
+        
+        if (useRtsp && rtspUrl) {
+            console.log("Sending RTSP URL:", rtspUrl);
+            ws.send(JSON.stringify({ rtsp_url: rtspUrl }));
+        } else if (useSystemCamera) {
+            console.log("Using system camera");
+            ws.send(JSON.stringify({ use_system_camera: true }));
+        } else {
+            console.log("Using browser webcam");
+            ws.send(JSON.stringify({ use_rtsp: false }));
+        }
+    };
 
     const captureFrame = useCallback(() => {
         if (!isAnalyzing || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || useRtsp || useSystemCamera) return;
@@ -126,56 +185,45 @@ const LiveFeed: React.FC<LiveFeedProps> = ({ onAlert }) => {
     }, [isAnalyzing, useRtsp, useSystemCamera]);
 
     const startAnalysis = () => {
+        setError(null);
+        setIsAnalyzing(true);
+        
         if (!isConnected) {
+            // Connect first, configuration will be sent in the onopen handler
             connectWebSocket();
+        } else if (wsRef.current?.readyState === WebSocket.OPEN) {
+            // Already connected, just send the configuration
+            sendConfiguration();
             
-            // Small delay to allow connection to establish
-            setTimeout(() => {
-                if (wsRef.current?.readyState === WebSocket.OPEN) {
-                    setIsAnalyzing(true);
-                    
-                    // Send configuration based on camera choice
-                    if (useRtsp && rtspUrl) {
-                        console.log("Sending RTSP URL:", rtspUrl);
-                        wsRef.current.send(JSON.stringify({ rtsp_url: rtspUrl }));
-                    } else if (useSystemCamera) {
-                        console.log("Using system camera");
-                        wsRef.current.send(JSON.stringify({ use_system_camera: true }));
-                    } else {
-                        console.log("Using browser webcam");
-                        wsRef.current.send(JSON.stringify({ use_rtsp: false }));
-                        
-                        // For browser webcam streaming, start sending frames at 10 fps
-                        frameIntervalRef.current = window.setInterval(captureFrame, 100);
-                    }
+            // For browser webcam streaming, start sending frames at 10 fps
+            if (!useRtsp && !useSystemCamera) {
+                if (frameIntervalRef.current) {
+                    clearInterval(frameIntervalRef.current);
                 }
-            }, 1000);
-        } else {
-            setIsAnalyzing(true);
-            
-            // Send configuration based on camera choice
-            if (useRtsp && rtspUrl && wsRef.current) {
-                wsRef.current.send(JSON.stringify({ rtsp_url: rtspUrl }));
-            } else if (useSystemCamera && wsRef.current) {
-                wsRef.current.send(JSON.stringify({ use_system_camera: true }));
-            } else {
-                // For browser webcam streaming, start sending frames at 10 fps
                 frameIntervalRef.current = window.setInterval(captureFrame, 100);
             }
+        } else {
+            setError("WebSocket connection is not in OPEN state. Please try again.");
+            setIsAnalyzing(false);
         }
     };
 
     const stopAnalysis = () => {
         setIsAnalyzing(false);
-        setAnnotatedFrame(null);
         
         if (frameIntervalRef.current) {
             clearInterval(frameIntervalRef.current);
             frameIntervalRef.current = null;
         }
+        
+        // Send a message to stop RTSP streaming on the server
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify({ use_rtsp: false }));
+        }
     };
 
     useEffect(() => {
+        // Clean up resources on unmount
         return () => {
             if (frameIntervalRef.current) {
                 clearInterval(frameIntervalRef.current);
@@ -184,15 +232,37 @@ const LiveFeed: React.FC<LiveFeedProps> = ({ onAlert }) => {
             if (wsRef.current) {
                 wsRef.current.close();
             }
+            
+            // Clean up any blob URLs
+            if (annotatedFrame && annotatedFrame.startsWith('blob:')) {
+                URL.revokeObjectURL(annotatedFrame);
+            }
         };
-    }, [isAnalyzing]);
+    }, [annotatedFrame]);
 
     // When camera choice changes, reset the analysis
     useEffect(() => {
         if (isAnalyzing) {
             stopAnalysis();
         }
-    }, [useRtsp, useSystemCamera, isAnalyzing]);
+    }, [useRtsp, useSystemCamera]);
+
+    // If analysis is active and connection is established, 
+    // start webcam frame sending if using browser webcam
+    useEffect(() => {
+        if (isAnalyzing && isConnected && !useRtsp && !useSystemCamera) {
+            if (frameIntervalRef.current) {
+                clearInterval(frameIntervalRef.current);
+            }
+            frameIntervalRef.current = window.setInterval(captureFrame, 100);
+        }
+        
+        return () => {
+            if (frameIntervalRef.current) {
+                clearInterval(frameIntervalRef.current);
+            }
+        };
+    }, [isAnalyzing, isConnected, useRtsp, useSystemCamera, captureFrame]);
 
     return (
         <div className="bg-gray-800 p-6 rounded-xl shadow-lg">
@@ -251,6 +321,9 @@ const LiveFeed: React.FC<LiveFeedProps> = ({ onAlert }) => {
                                 onChange={(e) => setRtspUrl(e.target.value)}
                                 className="w-full p-2 rounded bg-gray-700 text-white"
                             />
+                            <p className="text-xs text-gray-400 mt-1">
+                                Example: rtsp://username:password@ip-address:port/stream
+                            </p>
                         </div>
                     )}
                 </div>
@@ -259,13 +332,20 @@ const LiveFeed: React.FC<LiveFeedProps> = ({ onAlert }) => {
             <div className="relative">
                 <div className="rounded-lg overflow-hidden">
                     {annotatedFrame && isAnalyzing ? (
-                        <Image 
-                        src={annotatedFrame} 
-                        width={640}
-                        height={480}
-                        className="w-full rounded-lg"
-                        alt="Processed frame with annotations"
-                      />
+                        <div className="relative">
+                            <Image 
+                                src={annotatedFrame} 
+                                width={640}
+                                height={480}
+                                className="w-full rounded-lg"
+                                alt="Processed frame with annotations"
+                            />
+                            {connectionStatus && (
+                                <div className="absolute top-2 left-2 bg-blue-600/70 text-white px-2 py-1 rounded text-sm">
+                                    {connectionStatus}
+                                </div>
+                            )}
+                        </div>
                     ) : (
                         !useRtsp && !useSystemCamera ? (
                             <Webcam
@@ -286,7 +366,7 @@ const LiveFeed: React.FC<LiveFeedProps> = ({ onAlert }) => {
                     )}
                     
                     {violence && violence.violence && (
-                        <div className="absolute top-4 left-4 bg-red-600 text-white px-3 py-1 rounded-lg text-sm font-bold">
+                        <div className="absolute top-4 right-4 bg-red-600 text-white px-3 py-1 rounded-lg text-sm font-bold">
                             Violence Detected: {(violence.score * 100).toFixed(1)}%
                         </div>
                     )}
@@ -331,6 +411,16 @@ const LiveFeed: React.FC<LiveFeedProps> = ({ onAlert }) => {
                     </p>
                 </div>
             )}
+            
+            {isConnected ? (
+                <div className="mt-4 p-2 bg-green-500/20 border border-green-500/50 text-green-400 rounded text-xs text-center">
+                    Connected to server
+                </div>
+            ) : isAnalyzing ? (
+                <div className="mt-4 p-2 bg-yellow-500/20 border border-yellow-500/50 text-yellow-400 rounded text-xs text-center">
+                    Connecting to server...
+                </div>
+            ) : null}
         </div>
     );
 };

@@ -23,6 +23,7 @@ import base64
 import json
 from bson.objectid import ObjectId
 import boto3
+import asyncio
 #from flask_cors import CORS
 
 # Constants
@@ -33,7 +34,7 @@ MONGO_URI = "mongodb+srv://devanshdubey0012:xkHHPuCdbmUYPcSm@violence.ktn5b.mong
 AWS_ACCESS_KEY_ID = ""
 AWS_SECRET_ACCESS_KEY = ""
 S3_BUCKET = ""
-S3_REGION = "ap-south-1"
+S3_REGION = ""
 
 # Create an S3 client
 s3 = boto3.client(
@@ -167,7 +168,7 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "https://violence-detection-tan.vercel.app"],  # Update with your frontend URL
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "https://violence-detection-tan.vercel.app", "http://192.168.1.31:3000"],  # Update with your frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -505,91 +506,150 @@ async def analyze_video_file(file: UploadFile = File(...)):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    print("WebSocket connection attempt...")
     await websocket.accept()
+    print("WebSocket connection accepted!")
     rtsp_url = None
     use_rtsp = False
     cap = None
     
     try:
         # Process frames continuously
+        print("Entering WebSocket processing loop")
         while True:
-            message = None
             try:
-                # Try to receive data
+                # Handle incoming messages - configuration or frames
                 message = await websocket.receive()
+                print(f"Received message type: {message.get('type')}")
                 
-                # Check message type
+                # Check if client disconnected
                 if message.get("type") == "websocket.disconnect":
-                    print("Client disconnected")
+                    print("Client sent disconnect message")
                     break
                 
+                # Handle binary data (frames from browser webcam)
                 if "bytes" in message:
-                    # Process binary data (camera frames)
-                    data = message["bytes"]
-                    
-                    # Process webcam frame from frontend
-                    nparr = np.frombuffer(data, np.uint8)
-                    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                    
-                    if frame is None:
-                        await websocket.send_json({"error": "Invalid image data received"})
-                        continue
+                    # Only process webcam frames if we're not using RTSP
+                    if not use_rtsp:
+                        data = message["bytes"]
+                        nparr = np.frombuffer(data, np.uint8)
+                        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
                         
-                elif "text" in message:
-                    # Process JSON configuration
-                    json_data = json.loads(message["text"])
-                    print(f"Received JSON config: {json_data}")
-                    
-                    # Configure RTSP if provided
-                    if "rtsp_url" in json_data and json_data["rtsp_url"]:
-                        rtsp_url = json_data["rtsp_url"]
-                        use_rtsp = True
-                        
-                        # Close previous capture if any
-                        if cap and cap.isOpened():
-                            cap.release()
-                            
-                        # Open RTSP stream
-                        print(f"Opening RTSP stream: {rtsp_url}")
-                        cap = cv2.VideoCapture(rtsp_url)
-                        
-                        if not cap.isOpened():
-                            await websocket.send_json({"error": f"Failed to open RTSP stream: {rtsp_url}"})
-                            use_rtsp = False
+                        if frame is None:
+                            print("ERROR: Received invalid image data")
+                            await websocket.send_json({"error": "Invalid image data received"})
                             continue
-                        else:
-                            await websocket.send_json({"message": f"RTSP stream opened: {rtsp_url}"})
-                    elif "use_rtsp" in json_data and json_data["use_rtsp"] == False:
-                        # User wants to use browser's webcam
-                        use_rtsp = False
-                        if cap and cap.isOpened():
-                            cap.release()
-                            cap = None
-                        await websocket.send_json({"message": "Using browser webcam"})
+                    else:
+                        # If using RTSP, ignore frames from browser
+                        continue
+                
+                # Handle text data (configuration)
+                elif "text" in message:
+                    try:
+                        json_data = json.loads(message["text"])
+                        print(f"Received configuration: {json_data}")
+                        
+                        # Configure RTSP
+                        if "rtsp_url" in json_data and json_data["rtsp_url"]:
+                            rtsp_url = json_data["rtsp_url"]
+                            
+                            # Close previous capture if any
+                            if cap and cap.isOpened():
+                                cap.release()
+                                cap = None
+                            
+                            print(f"Attempting to connect to RTSP: {rtsp_url}")
+                            use_rtsp = True
+                            cap = open_rtsp_stream_with_fallbacks(rtsp_url)
+                            
+                            if cap is None or not cap.isOpened():
+                                print("Failed to open RTSP stream")
+                                await websocket.send_json({"error": f"Failed to open RTSP stream: {rtsp_url}"})
+                                use_rtsp = False
+                            else:
+                                print(f"Successfully opened RTSP stream: {rtsp_url}")
+                                await websocket.send_json({"message": f"RTSP stream opened successfully"})
+                        
+                        # Handle stopping RTSP
+                        if "use_rtsp" in json_data and not json_data["use_rtsp"]:
+                            use_rtsp = False
+                            if cap and cap.isOpened():
+                                cap.release()
+                                cap = None
+                            await websocket.send_json({"message": "Switched to webcam mode"})
+                                
+                    except json.JSONDecodeError as e:
+                        print(f"JSON decode error: {e}")
+                        await websocket.send_json({"error": f"Invalid JSON: {str(e)}"})
+                        continue
+                
+                # Process RTSP frames if available
+                if use_rtsp and cap and cap.isOpened():
+                    ret, frame = cap.read()
+                    if not ret:
+                        print("Failed to read frame from RTSP stream")
+                        # Try to reconnect to RTSP stream
+                        cap.release()
+                        cap = open_rtsp_stream_with_fallbacks(rtsp_url)
+                        if cap is None or not cap.isOpened():
+                            await websocket.send_json({"error": "Failed to reconnect to RTSP stream"})
+                            use_rtsp = False
+                        continue
+                
+                # Skip if no frame is available to process
+                if (use_rtsp and ("frame" not in locals() or frame is None)) or \
+                   (not use_rtsp and ("frame" not in locals() or frame is None)):
+                    # No frame to process
+                    if use_rtsp:
+                        # For RTSP we continue trying to get frames
                         continue
                     else:
-                        # Use system camera as fallback
-                        use_rtsp = True
-                        
-                        # Close previous capture if any
-                        if cap and cap.isOpened():
-                            cap.release()
-                            
-                        # Try to open system camera
-                        print("Opening system camera")
-                        cap = cv2.VideoCapture(0)  # 0 is usually the built-in webcam
-                        
-                        if not cap.isOpened():
-                            await websocket.send_json({"error": "Failed to open system camera"})
-                            use_rtsp = False
-                            continue
-                        else:
-                            await websocket.send_json({"message": "System camera opened"})
-                            
-                else:
-                    # Unknown message type
-                    continue
-                    
+                        # For webcam we just wait for more data
+                        await asyncio.sleep(0.01)
+                        continue
+                
+                # Process the frame with violence detection model
+                violence_score = predict_violence(frame)
+                is_violent = violence_score > 0.3
+                
+                # Object detection
+                detections = detect_objects(frame)
+                
+                # Create annotated frame
+                annotated_frame = frame.copy()
+                
+                # Draw bounding boxes around detected people
+                for box, score, label in zip(detections['boxes'], detections['scores'], detections['labels']):
+                    if score > 0.3:
+                        x1, y1, x2, y2 = map(int, box)
+                        # Person is label 1 in COCO dataset
+                        if label == 1:
+                            color = (0, 0, 255) if is_violent else (0, 255, 0)
+                            thickness = 3 if is_violent else 1
+                            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, thickness)
+                
+                # Add status text
+                status_text = f"Violence: {violence_score:.2f}" if is_violent else "No Violence"
+                cv2.putText(annotated_frame, status_text, (10, 30),
+                          cv2.FONT_HERSHEY_SIMPLEX, 1,
+                          (0, 0, 255) if is_violent else (0, 255, 0), 2)
+                
+                # Convert frame to JPEG and send it
+                _, buffer = cv2.imencode('.jpg', annotated_frame)
+                jpg_bytes = buffer.tobytes()
+                await websocket.send_bytes(jpg_bytes)
+                
+                # Send analysis data as JSON
+                await websocket.send_json({
+                    "is_violent": is_violent,
+                    "violence_score": violence_score,
+                    "timestamp": datetime.datetime.now().isoformat()
+                })
+                
+                # Add a small delay to control frame rate
+                if use_rtsp:
+                    await asyncio.sleep(0.03)  # ~30fps for RTSP
+                
             except WebSocketDisconnect:
                 print("WebSocket disconnected")
                 break
@@ -598,65 +658,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 print(f"Error processing websocket message: {str(e)}")
                 import traceback
                 traceback.print_exc()
-                continue
-            
-            # Skip frame processing if we just handled configuration
-            if message and "text" in message:
+                # Don't break the loop, try to continue processing
+                await asyncio.sleep(0.5)  # Add delay before retry
                 continue
                 
-            # Get frame from RTSP or system camera if configured
-            if use_rtsp and cap and cap.isOpened():
-                ret, frame = cap.read()
-                if not ret:
-                    await websocket.send_json({"error": "Failed to read from stream"})
-                    continue
-            
-            # Violence detection
-            violence_score = predict_violence(frame)
-            is_violent = violence_score > 0.3
-            
-            # Object detection
-            detections = detect_objects(frame)
-            
-            # Create annotated frame with violence indicators
-            annotated_frame = frame.copy()
-            
-            # Draw bounding boxes around detected people
-            for box, score, label in zip(detections['boxes'], detections['scores'], detections['labels']):
-                if score > 0.3:
-                    x1, y1, x2, y2 = map(int, box)
-                    # Person is label 1 in COCO dataset
-                    if label == 1:
-                        # Red for violence, green for non-violence
-                        color = (0, 0, 255) if is_violent else (0, 255, 0)
-                        thickness = 3 if is_violent else 1
-                        
-                        # Draw rectangle around person
-                        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, thickness)
-            
-            # Add status text
-            status_text = f"Violence: {violence_score:.2f}" if is_violent else "No Violence"
-            # Check if we have a frame to process
-            if "frame" not in locals() and not (use_rtsp and cap and cap.isOpened()):
-                continue
-            cv2.putText(annotated_frame, status_text, (10, 30),
-                      cv2.FONT_HERSHEY_SIMPLEX, 1,
-                      (0, 0, 255) if is_violent else (0, 255, 0), 2)
-            
-            # Convert frame back to bytes for sending via websocket
-            _, buffer = cv2.imencode('.jpg', annotated_frame)
-            jpg_bytes = buffer.tobytes()
-            
-            # Send results back to client
-            await websocket.send_bytes(jpg_bytes)
-            
-            # Also send analysis data as JSON
-            await websocket.send_json({
-                "is_violent": is_violent,
-                "violence_score": violence_score,
-                "timestamp": datetime.datetime.now().isoformat()
-            })
-            
     except WebSocketDisconnect:
         print("WebSocketDisconnect caught in outer try block")
     except Exception as e:
@@ -668,6 +673,71 @@ async def websocket_endpoint(websocket: WebSocket):
         if cap and cap.isOpened():
             cap.release()
         print("WebSocket connection closed")
+
+# Add this function to your main.py file
+def open_rtsp_stream_with_fallbacks(rtsp_url):
+    """Try multiple methods to open RTSP stream and return the first working one"""
+    print(f"Attempting to open RTSP stream: {rtsp_url}")
+    
+    # Method 1: Standard OpenCV
+    print("Trying standard OpenCV connection...")
+    cap = cv2.VideoCapture(rtsp_url)
+    if cap.isOpened():
+        ret, test_frame = cap.read()
+        if ret and test_frame is not None:
+            print("Standard OpenCV connection successful")
+            return cap
+        cap.release()
+    
+    # Method 2: FFMPEG with TCP
+    print("Trying FFMPEG with TCP transport...")
+    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
+    cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
+    if cap.isOpened():
+        ret, test_frame = cap.read()
+        if ret and test_frame is not None:
+            print("FFMPEG with TCP transport successful")
+            return cap
+        cap.release()
+    
+    # Method 3: FFMPEG with UDP
+    print("Trying FFMPEG with UDP transport...")
+    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;udp"
+    cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
+    if cap.isOpened():
+        ret, test_frame = cap.read()
+        if ret and test_frame is not None:
+            print("FFMPEG with UDP transport successful")
+            return cap
+        cap.release()
+    
+    # Method 4: FFMPEG with additional options
+    print("Trying FFMPEG with additional options...")
+    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|buffer_size;1024000|stimeout;5000000|max_delay;500000"
+    cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
+    if cap.isOpened():
+        ret, test_frame = cap.read()
+        if ret and test_frame is not None:
+            print("FFMPEG with additional options successful")
+            return cap
+        cap.release()
+    
+    # Method 5: GStreamer pipeline if available
+    if 'GStreamer' in cv2.getBuildInformation():
+        print("Trying GStreamer pipeline...")
+        gst_str = (f'rtspsrc location={rtsp_url} latency=0 ! '
+                  'rtph264depay ! h264parse ! avdec_h264 ! '
+                  'videoconvert ! appsink')
+        cap = cv2.VideoCapture(gst_str, cv2.CAP_GSTREAMER)
+        if cap.isOpened():
+            ret, test_frame = cap.read()
+            if ret and test_frame is not None:
+                print("GStreamer pipeline successful")
+                return cap
+            cap.release()
+    
+    print("All RTSP connection methods failed")
+    return None
 
 @app.get("/analyze_video/{analysis_id}")
 async def get_video_analysis(analysis_id: str):
