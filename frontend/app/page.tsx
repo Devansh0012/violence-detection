@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { useState, useEffect } from 'react'
-import { Shield, Eye, Zap, Users, Lock, ChevronRight, Play } from 'lucide-react'
+import { Shield, Eye, Zap, ChevronRight, Play } from 'lucide-react'
 
 export default function Home() {
   const [isVisible, setIsVisible] = useState(false)

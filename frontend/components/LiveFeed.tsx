@@ -28,10 +28,10 @@ const LiveFeed: React.FC<LiveFeedProps> = ({ onAlert }) => {
     // Default to your RTSP URL
     const [rtspUrl, setRtspUrl] = useState<string>('rtsp://test123:test123@192.168.1.23:554/stream1');
     const [useRtsp, setUseRtsp] = useState(true);
-    const [connectionStatus, setConnectionStatus] = useState<string | null>(null);
+    const [, setConnectionStatus] = useState<string | null>(null);
     const [lastActivity, setLastActivity] = useState<number>(Date.now());
-    const [streamStats, setStreamStats] = useState<{fps: number}>({fps: 0});
-    const [webcamActive, setWebcamActive] = useState(false);
+    const [, setStreamStats] = useState<{fps: number}>({fps: 0});
+    const [, setWebcamActive] = useState(false);
 
     const processMessage = useCallback((event: MessageEvent) => {
         try {

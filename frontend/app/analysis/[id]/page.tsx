@@ -1,8 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { useParams, useSearchParams } from 'next/navigation';
-import Image from 'next/image';
+import { useParams } from 'next/navigation';
 
 interface ViolentSegment {
   start_frame: number;
@@ -45,9 +44,7 @@ interface AnalysisData {
 
 export default function AnalysisPage() {
   const params = useParams();
-  const searchParams = useSearchParams();
   const analysisId = params?.id as string;
-  const videoUrl = searchParams?.get('video');
 
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
